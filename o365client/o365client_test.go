@@ -199,7 +199,7 @@ func TestO365Client_GetOrCreateFolderIDByName_httpmock(t *testing.T) {
 			return r, nil
 		})
 
-	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount,sizeInBytes$`),
+	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount$`),
 		func(req *http.Request) (*http.Response, error) {
 			resp := `{"value": [{"id": "mixed-id", "displayName": "mixedcase"}]}`
 			r := httpmock.NewStringResponse(200, resp)
@@ -223,7 +223,7 @@ func TestO365Client_GetOrCreateFolderIDByName_httpmock(t *testing.T) {
 			return r, nil
 		})
 
-	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount,sizeInBytes$`),
+	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount$`),
 		func(req *http.Request) (*http.Response, error) {
 			resp := `{"value": []}`
 			r := httpmock.NewStringResponse(200, resp)
@@ -248,7 +248,7 @@ func TestO365Client_GetMailboxHealthCheck_httpmock(t *testing.T) {
 	httpmock.Activate()
 	defer httpmock.DeactivateAndReset()
 
-	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount,sizeInBytes$`),
+	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount$`),
 		func(req *http.Request) (*http.Response, error) {
 			resp := `{"value": [
 				{"id": "inbox-id", "displayName": "Inbox", "totalItemCount": 10, "sizeInBytes": 1024},
@@ -285,7 +285,7 @@ func TestO365Client_GetMailboxStats_httpmock(t *testing.T) {
 	httpmock.Activate()
 	defer httpmock.DeactivateAndReset()
 
-	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount,sizeInBytes$`),
+	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount$`),
 		func(req *http.Request) (*http.Response, error) {
 			resp := `{"value": [
 				{"id": "inbox-id", "displayName": "Inbox", "totalItemCount": 10},
@@ -762,7 +762,7 @@ func TestO365Client_GetMailboxHealthCheck_InboxAndSorting(t *testing.T) {
 	defer httpmock.DeactivateAndReset()
 
 	// Folders in non-alphabetical order to test sorting
-	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount,sizeInBytes$`),
+	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount$`),
 		func(req *http.Request) (*http.Response, error) {
 			resp := `{"value": [
 				{"id": "sent-id", "displayName": "Sent", "totalItemCount": 5},
@@ -880,7 +880,7 @@ func TestO365Client_GetMailboxHealthCheck_InboxLastMessageError(t *testing.T) {
 	httpmock.Activate()
 	defer httpmock.DeactivateAndReset()
 
-	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount,sizeInBytes$`),
+	httpmock.RegisterRegexpResponder("GET", regexp.MustCompile(`.*mailFolders\?\$select=id,displayName,totalItemCount$`),
 		func(req *http.Request) (*http.Response, error) {
 			resp := `{"value": [{"id": "inbox-id", "displayName": "Inbox", "totalItemCount": 1}]}`
 			r := httpmock.NewStringResponse(200, resp)

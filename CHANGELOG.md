@@ -5,6 +5,13 @@ All notable changes to the `o365mbx` project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-28
+
+### Fixed
+* **MailFolder OData $select Schema Compliance (`o365client/o365client.go`) [GH-40]**:
+  * Fixed an issue where `-healthcheck` and `GetMailboxStats` failed with HTTP 400 (`Parsing OData Select and Expand failed: Could not find a property named 'sizeInBytes' on type 'microsoft.graph.mailFolder'`) by removing `sizeInBytes` from OData `$select`.
+  * Restored accurate folder item count retrieval and `source_mailbox_counts` population in `status_*.json` summary reports.
+
 ---
 
 ## [1.1.0] - 2026-07-28
