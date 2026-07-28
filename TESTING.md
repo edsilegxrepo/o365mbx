@@ -91,20 +91,7 @@ The resilience test suite automatically manages the Microsoft Dev Proxy process 
 
 ---
 
-## 3. March 2026 Developer Issue Log Mapping Matrix
-
-All 4 issues reported in the March 2026 Developer Issue Log are 100% mapped, mocked, and verified in the test suite:
-
-| Developer Issue (March 2026 Log) | Real-World Email & Screenshot | Mock Payload in `resilience-full-pipeline.json` | Verification Point in Resilience Tests |
-| :--- | :--- | :--- | :--- |
-| **Issue 1: `.msg` Item Attachment Failure** | `AP@Arthrex.com` (`image1.png`) | `msg-nested` from `AP@Arthrex.com` with `@odata.type: "#microsoft.graph.itemAttachment"` | Validates `.msg`/`.eml` item attachment extraction via raw MIME stream. |
-| **Issue 2: Status Reports & `error.json` Missing** | Non-fatal error persistence across processing modes | `msg-massive` & `msg-kitchen-sink` triggering download errors | Verifies `fileHandler.SaveError` produces `error.json` in `full`, `incremental`, & `route` modes. |
-| **Issue 3: Nil Subject Crash (`panic: SIGSEGV`)** | `ACCOUNTSPAYABLE@MODERNATX.COM` (`image3.png`) | `msg-null-subject` from `ACCOUNTSPAYABLE@MODERNATX.COM` with `"subject": null` | Verifies safe dereferencing (`utils.StringValue`) under live proxy runs. |
-| **Issue 4: High Attachment Count / Large File Timeouts** | `mmsar@mckesson.com` (102 PDFs, 6MB total) (`image2.png`) | `msg-massive` from `mmsar@mckesson.com` (105 file attachments) & `$value` fallback | Tests worker pool concurrency, per-message timeout handling, and large file fallback. |
-
----
-
-## 4. Live Dev Proxy Mock Specifications (`resilience-full-pipeline.json`)
+## 3. Live Dev Proxy Mock Specifications (`resilience-full-pipeline.json`)
 
 The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to simulate complex Graph API payloads and endpoints deterministically. Below is the complete specification table for all mocked test scenarios, their engineering justifications, and acceptance criteria:
 
@@ -130,7 +117,7 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 
 ---
 
-## 5. Complete List of Tests
+## 4. Complete List of Tests
 
 ### Unit Tests (`go test ./...`)
 
@@ -287,7 +274,7 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 
 ---
 
-## 6. Code Coverage Report
+## 5. Code Coverage Report
 
 The project maintains high testing standards with overall statement coverage exceeding the 90% target:
 
@@ -306,7 +293,7 @@ The project maintains high testing standards with overall statement coverage exc
 
 ---
 
-## 7. How to Run the Tests
+## 6. How to Run the Tests
 
 ### Quick Reference Commands
 
@@ -347,7 +334,7 @@ The project maintains high testing standards with overall statement coverage exc
 
 ---
 
-## 8. Maintenance & Troubleshooting
+## 7. Maintenance & Troubleshooting
 
 - **Kiota Untyped Node Deserialization**: Graph API untyped fields (`sizeInBytes`) are parsed as `UntypedNumber`/`UntypedNode` objects. Use `getFolderSizeFromAdditionalData` with `interface{ GetValue() any }` interface unwrapping.
 - **Dev Proxy Executable Path**: Set `%PROXY_HOME%` or place `devproxy.exe` in `d:\inetd\devproxy\devproxy.exe` or `$PATH`.
