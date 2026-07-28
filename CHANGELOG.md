@@ -5,15 +5,6 @@ All notable changes to the `o365mbx` project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.1] - 2026-07-28
-
-### Fixed
-* **MailFolder OData $select Schema Compliance (`o365client/o365client.go`) [GH-40]**:
-  * Fixed an issue where `-healthcheck` and `GetMailboxStats` failed with HTTP 400 (`Parsing OData Select and Expand failed: Could not find a property named 'sizeInBytes' on type 'microsoft.graph.mailFolder'`) by removing `sizeInBytes` from OData `$select`.
-  * Restored accurate folder item count retrieval and `source_mailbox_counts` population in `status_*.json` summary reports.
-
----
-
 ## [1.1.0] - 2026-07-28
 
 ### Added
@@ -28,6 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   * Added unit, error branch, provider resolution, and Microsoft Dev Proxy resilience tests for initial token acquisition, expiration handling, and auto-refresh during live API calls.
 
 ### Fixed
+* **MailFolder OData $select Schema Compliance (`o365client/o365client.go`) [GH-40]**:
+  * Fixed an issue where `-healthcheck` and `GetMailboxStats` failed with HTTP 400 (`Parsing OData Select and Expand failed: Could not find a property named 'sizeInBytes' on type 'microsoft.graph.mailFolder'`) by removing `sizeInBytes` from OData `$select`.
+  * Restored accurate folder item count retrieval and `source_mailbox_counts` population in `status_*.json` summary reports.
 * **Accurate Status Summary Counts & Mailbox Stats (`engine/engine.go` & `filehandler/filehandler.go`) [GH-38]**:
   * Fixed an issue where `job_processed_count` and `job_error_count` remained 0 in `status_*.json` summary reports during `full` and `incremental` sync modes by adding atomic stat tracking across all non-route processing branches.
   * Added fallback initialization for `sourceCounts` map to ensure valid JSON formatting (`"source_mailbox_counts": {}`) when initial mailbox stats retrieval returns `nil`.
