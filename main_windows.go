@@ -1,8 +1,18 @@
 // Package main is the entry point for the o365mbx application.
 //
-// This file contains the Windows-specific implementation of pre-flight checks.
-// It verifies that "Win32 long paths" are enabled in the registry, which is
-// required for the deep directory structures often created during email processing.
+// OBJECTIVE:
+// Provide Windows-specific pre-flight checks to ensure OS-level file path capabilities.
+//
+// CORE COMPONENTS:
+// 1. checkLongPathSupport: Windows registry checker for Win32 long path policy.
+//
+// FUNCTIONALITY:
+// - Verifies HKLM\SYSTEM\CurrentControlSet\Control\FileSystem\LongPathsEnabled == 1.
+// - Logs actionable instructions if Win32 long paths are disabled.
+//
+// DATA FLOW:
+// Windows Startup -> checkLongPathSupport() -> Registry Query -> Application Continuation or Fatal Exit.
+//
 //go:build windows
 
 package main

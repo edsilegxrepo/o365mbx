@@ -2,9 +2,12 @@
 // body content, including HTML-to-Text and HTML-to-PDF conversion.
 //
 // OBJECTIVE:
-// This package is responsible for the "T" (Transform) in the ETL pipeline. It takes
-// raw email body content (usually HTML) and converts it into the desired output format
-// while sanitizing the content and preserving important information like links and alt-text.
+// Responsible for transforming raw email body content into clean plain text or high-fidelity PDF documents.
+//
+// CORE COMPONENTS:
+// 1. EmailProcessor: Thread-safe content transformation engine with managed Chromium pool.
+// 2. CleanHTML: HTML parser and Markdown-style text converter.
+// 3. ConvertToPDF: Chromedp-based PDF renderer using Chrome DevTools Protocol.
 //
 // CORE FUNCTIONALITY:
 //  1. HTML Sanitization: Cleans HTML to extract meaningful plain text while maintaining
@@ -16,6 +19,9 @@
 //  4. Chrome Daemon & Local Binary Support: Supports both managed local Chromium binaries and
 //     direct WebSocket connections to pre-launched Chrome daemons (e.g. ws://127.0.0.1:9222) for zero-startup latency.
 //  5. Content Detection: Provides utilities to detect if content is HTML or plain text.
+//
+// DATA FLOW:
+// Raw HTML Body -> CleanHTML (Text Mode) OR Chromedp Page Render -> PrintToPDF (PDF Mode) -> Converted Output Bytes.
 //
 // PERFORMANCE & RESOURCE MANAGEMENT:
 //   - Tab Isolation: Isolates PDF conversion tasks in ephemeral Chrome tabs to prevent cross-request contamination.

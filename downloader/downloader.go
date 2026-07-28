@@ -1,6 +1,22 @@
 // Package downloader provides the high-level reusable library entry point for o365mbx.
-// It manages access token resolution, dependency injection (O365Client, EmailProcessor, FileHandler),
-// browser pool lifecycles, and execution of both diagnostic and full download pipelines.
+//
+// OBJECTIVE:
+// Provide a clean, programmatic Go library API for embedding o365mbx into downstream microservices
+// (e.g. service-gateway) without requiring CLI flag parsing or process execution.
+//
+// CORE COMPONENTS:
+// 1. Downloader: High-level downloader instance managing configuration and dependencies.
+// 2. ResolveAuthProvider: Auth resolver supporting OAuth2 Client Credentials and Static Tokens (encrypted or raw).
+// 3. LoadAccessToken: Zero-Trust secret resolution supporting secretprotector AES-256-GCM decryption.
+//
+// CORE FUNCTIONALITY:
+// - Manages access token resolution and Client Credentials auto-refresh.
+// - Initializes dependency graph (O365Client, EmailProcessor, FileHandler).
+// - Manages browser pool lifecycles for HTML-to-PDF rendering.
+// - Executes Health Check diagnostic runs and primary Engine sync runs.
+//
+// DATA FLOW:
+// Downloader.Run(ctx, cfg) -> ResolveAuthProvider -> NewO365Client -> NewFileHandler -> NewEmailProcessor -> Engine.RunEngine
 //
 // USAGE AS A LIBRARY (e.g. in service-gateway):
 //
@@ -20,23 +36,23 @@ package downloader
 
 import (
 	"context"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"fmt"
 	"io"
+	// #nosec G404 - math/rand is used exclusively for exponential backoff jitter and retry timing, not cryptographic security.
+	// nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
+	"math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"os"
 	"regexp"
 	"strings"
 	"time"
 
-	// #nosec G404 - math/rand is used exclusively for exponential backoff jitter and retry timing, not cryptographic security.
-	"math/rand" // nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
-
-	"o365mbx/apperrors"
-	"o365mbx/emailprocessor"
-	"o365mbx/engine"
-	"o365mbx/filehandler"
-	"o365mbx/o365client"
-	"o365mbx/presenter"
+	"criticalsys.net/o365mbx/apperrors"
+	"criticalsys.net/o365mbx/emailprocessor"
+	"criticalsys.net/o365mbx/engine"
+	"criticalsys.net/o365mbx/filehandler"
+	"criticalsys.net/o365mbx/o365client"
+	"criticalsys.net/o365mbx/presenter"
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -147,6 +163,56 @@ func LoadAccessToken(cfg *engine.Config) (string, error) {
 	return decryptedToken, nil
 }
 
+// ResolveAuthProvider determines whether to create a ClientCredentialsAuthenticationProvider or StaticTokenAuthenticationProvider based on cfg.
+func ResolveAuthProvider(cfg *engine.Config) (o365client.AuthenticationProvider, error) {
+	if cfg.TenantID != "" {
+		log.Info("Initializing Client Credentials Authentication Provider with auto-refresh.")
+		clientSecret := cfg.ClientSecret
+		if clientSecret == "" {
+			ctx := context.Background()
+			masterKey, err := libsecsecrets.ResolveKey(ctx, cfg.SecretMasterKey, cfg.SecretMasterKeyEnv, cfg.SecretMasterKeyFile)
+			if err != nil {
+				return nil, &apperrors.APIError{
+					StatusCode: 401,
+					Msg:        fmt.Sprintf("security policy violation: master key required for encrypted client secret: %v", err),
+				}
+			}
+			defer libsecsecrets.ZeroBuffer(masterKey)
+
+			var rawCiphertext string
+			if cfg.ClientSecretFile != "" {
+				content, readErr := os.ReadFile(cfg.ClientSecretFile)
+				if readErr != nil {
+					return nil, fmt.Errorf("failed to read client secret file %s: %w", cfg.ClientSecretFile, readErr)
+				}
+				rawCiphertext = strings.TrimSpace(string(content))
+			} else if cfg.ClientSecretEnv {
+				rawCiphertext = strings.TrimSpace(os.Getenv("CLIENT_SECRET"))
+				if rawCiphertext == "" {
+					return nil, fmt.Errorf("ClientSecretEnv specified, but CLIENT_SECRET environment variable is not set")
+				}
+			}
+
+			decryptedSecret, err := libsecsecrets.Decrypt(ctx, rawCiphertext, masterKey)
+			if err != nil {
+				return nil, &apperrors.APIError{
+					StatusCode: 401,
+					Msg:        fmt.Sprintf("security policy violation: stored client secret must be an AES-256-GCM encrypted ciphertext created by secretprotector: %v", err),
+				}
+			}
+			clientSecret = decryptedSecret
+		}
+
+		return o365client.NewClientCredentialsAuthenticationProvider(cfg.TenantID, cfg.ClientID, clientSecret)
+	}
+
+	token, err := LoadAccessToken(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return o365client.NewStaticTokenAuthenticationProvider(token)
+}
+
 // ValidateFinalConfig performs cross-field validation on the configuration object.
 func ValidateFinalConfig(cfg *engine.Config) error {
 	if cfg.MailboxName == "" {
@@ -178,10 +244,10 @@ func (d *Downloader) Execute(ctx context.Context, out io.Writer) error {
 		out = os.Stdout
 	}
 
-	// Token Loading
-	accessToken, err := LoadAccessToken(d.cfg)
+	// Authentication Provider Resolution (Static Token or Client Credentials with Auto-Refresh)
+	authProvider, err := ResolveAuthProvider(d.cfg)
 	if err != nil {
-		return fmt.Errorf("error loading access token: %w", err)
+		return fmt.Errorf("error resolving authentication provider: %w", err)
 	}
 
 	// Validation
@@ -193,7 +259,7 @@ func (d *Downloader) Execute(ctx context.Context, out io.Writer) error {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	// Dependency Injection
-	o365Client, err := o365client.NewO365Client(accessToken, rng)
+	o365Client, err := o365client.NewO365ClientWithAuthProvider(authProvider, rng)
 	if err != nil {
 		return fmt.Errorf("error creating O365 client: %w", err)
 	}

@@ -1,7 +1,15 @@
 // Package utils provides common utility functions for the application,
 // such as safe pointer dereferencing.
 //
-// This file contains unit tests for the utils package.
+// OBJECTIVE:
+// Provide unit testing for safe dereferencing helper functions and ASCII control character stripping.
+//
+// CORE COMPONENTS:
+// 1. TestStringValue, TestTimeValue, TestBoolValue, TestInt32Value: Tests nil-pointer fallback safety.
+// 2. TestSanitizeControlCharacters: Tests control character removal while preserving standard whitespace (\n).
+//
+// TEST STRATEGY:
+// Uses table-based and assertion-based unit tests to verify pointer dereferencing and string sanitization.
 package utils
 
 import (

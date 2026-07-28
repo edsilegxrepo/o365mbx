@@ -2,14 +2,21 @@
 // throughout the application.
 //
 // OBJECTIVE:
-// This package provides a centralized location for application-specific error types.
-// These types allow for better error identification, categorization, and reporting
-// across different packages (e.g., distinguishing between API errors and FS errors).
+// Centralized location for application-specific error types, exit codes, and classification helpers.
+//
+// CORE COMPONENTS:
+// 1. APIError: Structured Microsoft Graph API errors with status code tracking.
+// 2. FileSystemError: Path-aware local I/O error wrapping.
+// 3. GetExitCode: Error inspector returning granular exit code constants.
+// 4. ErrMissingDeltaLink: Sentinel error for missing incremental sync delta links.
 //
 // CORE FUNCTIONALITY:
 // 1. APIError: Represents structured errors from the Microsoft Graph API, including status codes.
 // 2. FileSystemError: Wraps local I/O errors with path context and descriptive messages.
 // 3. Sentinel Errors: Defines common error conditions like ErrMissingDeltaLink.
+//
+// DATA FLOW:
+// Runtime Failure -> apperrors Type Inspection -> Exit Code Resolution -> Application Diagnostic Exit.
 package apperrors
 
 import (

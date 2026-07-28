@@ -1,7 +1,18 @@
 // Package filehandler manages all local file system operations, including
 // workspace creation, message saving, attachment handling, and state persistence.
 //
-// This file contains unit tests for the filehandler package.
+// OBJECTIVE:
+// Provide comprehensive unit testing for workspace creation security, message serialization, attachment storage,
+// MIME envelope extraction, metadata updates, rate limiting, and state/status report JSON persistence.
+//
+// CORE COMPONENTS:
+// 1. TestFileHandler_CreateWorkspace_*: Tests directory creation, symlink checks, and parent file collision errors.
+// 2. TestFileHandler_SaveMessage_*: Tests metadata.json and body (.txt, .html, .pdf) serialization.
+// 3. TestFileHandler_SaveAttachment_* & TestFileHandler_SaveItemAttachment_*: Tests file attachment storage, $value streaming fallback, and MIME envelope parsing.
+// 4. TestFileHandler_WriteAttachmentsToMetadata & TestFileHandler_SaveStatusReport: Tests atomic metadata and summary status report generation.
+//
+// TEST STRATEGY:
+// Uses temporary directories (`t.TempDir()`), mock Graph API models, and synthesized raw MIME data to test filesystem interactions safely.
 package filehandler_test
 
 import (
@@ -16,10 +27,10 @@ import (
 	"testing"
 	"time"
 
+	"criticalsys.net/o365mbx/filehandler"
+	"criticalsys.net/o365mbx/mocks"
+	"criticalsys.net/o365mbx/o365client"
 	"github.com/jhillyerd/enmime"
-	"o365mbx/filehandler"
-	"o365mbx/mocks"
-	"o365mbx/o365client"
 
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
 	"github.com/sirupsen/logrus"
@@ -262,6 +273,7 @@ func TestFileHandler_WriteAttachmentsToMetadata(t *testing.T) {
 	data, err := os.ReadFile(metaPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(data), "01_a1.txt")
+	assert.Contains(t, string(data), "\"attachment_counts\": 1")
 }
 
 func TestFileHandler_Errors(t *testing.T) {
@@ -562,6 +574,13 @@ func TestFileHandler_SaveStatusReport(t *testing.T) {
 	assert.Equal(t, int32(10), status.SourceCounts["Inbox"])
 	assert.Equal(t, 8, status.JobProcessedCount)
 	assert.Equal(t, 2, status.JobErrorCount)
+
+	// Test nil sourceCounts fallback
+	err = fh.SaveStatusReport("user@test.com", nil, 5, 0)
+	assert.NoError(t, err)
+	files, _ = filepath.Glob(filepath.Join(tmpDir, "status_*.json"))
+	data, _ = os.ReadFile(files[len(files)-1])
+	assert.NotContains(t, string(data), "\"source_mailbox_counts\": null")
 }
 
 func TestFileHandler_CopyWithContext(t *testing.T) {

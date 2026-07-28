@@ -1,7 +1,18 @@
 // Package engine implements the core business logic and orchestrates the parallelized
 // email download and processing pipeline.
 //
-// This file provides functionality for loading and merging configuration.
+// OBJECTIVE:
+// Provide JSON configuration loading and default merging functionality for engine setup.
+//
+// CORE COMPONENTS:
+// 1. LoadConfig: Deserializes JSON configuration files and merges settings with defaults.
+//
+// FUNCTIONALITY:
+// - Initializes Config instance with baseline default values via SetDefaults().
+// - Reads optional JSON file from disk and unmarshals fields over defaults.
+//
+// DATA FLOW:
+// File Path String -> LoadConfig -> os.ReadFile -> json.Unmarshal -> Merged Config.
 package engine
 
 import (

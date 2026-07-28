@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.0] - 2026-07-28
+
+### Added
+* **OAuth2 Client Credentials Flow & Automatic Token Refresh (`o365client/auth`)**:
+  * Implemented native support for Microsoft Entra ID Client Credentials grant via `TenantID`, `ClientID`, and `ClientSecret` (or `ClientSecretFile` / `ClientSecretEnv` encrypted via `secretprotector`).
+  * Added `ClientCredentialsAuthenticationProvider` (`./o365client/auth.go`) featuring thread-safe token caching (`sync.RWMutex`) and **proactive background token refresh** (refreshes 5 minutes prior to expiration or upon detecting expired tokens).
+* **CLI Flags for Client Credentials (`main.go`)**:
+  * Added CLI flags `-tenant-id`, `-client-id`, `-client-secret`, `-client-secret-file`, and `-client-secret-env`.
+* **Service Gateway Integration (`service-gateway`)**:
+  * Completed full integration into `service-gateway` via `O365MBXService` (`../service-gateway/internal/services/o365mbx/handler.go`), mapping REST API operations (`/op/{opName}`) to `o365mbx/downloader`.
+* **Full Token Lifecycle Test Suite (`o365client_test.go` & `resilience_test.go`)**:
+  * Added unit, error branch, provider resolution, and Microsoft Dev Proxy resilience tests for initial token acquisition, expiration handling, and auto-refresh during live API calls.
+
+### Fixed
+* **Accurate Status Summary Counts & Mailbox Stats (`engine/engine.go` & `filehandler/filehandler.go`) [GH-38]**:
+  * Fixed an issue where `job_processed_count` and `job_error_count` remained 0 in `status_*.json` summary reports during `full` and `incremental` sync modes by adding atomic stat tracking across all non-route processing branches.
+  * Added fallback initialization for `sourceCounts` map to ensure valid JSON formatting (`"source_mailbox_counts": {}`) when initial mailbox stats retrieval returns `nil`.
+* **Accurate Attachment Counts in Metadata (`filehandler/filehandler.go`) [GH-39]**:
+  * Fixed an issue where `metadata.json` reported `"attachment_counts": 0` despite downloaded attachments by setting `metadata.AttachmentCount = len(attachments)` during the final atomic metadata JSON update.
+
+---
+
 ## [1.0.0] - 2026-07-27
 
 ### Refactored & Architecture

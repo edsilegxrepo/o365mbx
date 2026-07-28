@@ -1,7 +1,17 @@
 // Package emailprocessor provides utilities for transforming and cleaning email
 // body content, including HTML-to-Text and HTML-to-PDF conversion.
 //
-// This file contains unit tests for the emailprocessor package.
+// OBJECTIVE:
+// Provide unit and integration testing for HTML detection, HTML sanitization, body processing, and Chromedp PDF rendering.
+//
+// CORE COMPONENTS:
+// 1. TestEmailProcessor_IsHTML: Tests HTML structure detection.
+// 2. TestEmailProcessor_CleanHTML: Tests HTML-to-Markdown text sanitization.
+// 3. TestEmailProcessor_ConvertToPDF: Tests headless browser rendering and Chrome Daemon connection.
+// 4. TestEmailProcessor_PoolConcurrency & TestEmailProcessor_Recycling: Tests page pool concurrency and browser instance recycling.
+//
+// TEST STRATEGY:
+// Uses local HTML snippets, mock layouts, and conditional local Chromium binary detection to test text and PDF transformations.
 package emailprocessor
 
 import (

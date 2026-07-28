@@ -1,19 +1,31 @@
 // Package main is the entry point for the o365mbx application.
 //
-// This file contains unit and integration tests for the CLI and configuration logic.
+// OBJECTIVE:
+// Provide thorough unit and integration testing for command-line parsing, flag overrides,
+// configuration loading, token decryption, and application lifecycle execution in main.go.
+//
+// CORE COMPONENTS:
+// 1. TestLoadAccessToken: Exercises token loading from strings, files, and environment variables.
+// 2. TestOverrideConfigWithFlags: Validates CLI flag overrides over JSON config files.
+// 3. TestRun: Tests CLI execution pathways, flag validation, and temporary token file cleanup.
+//
+// TEST STRATEGY:
+// Uses in-memory data structures, temporary files, environment variable overrides, and secretprotector
+// AES-256-GCM test keys to validate CLI behavior without mutating system state.
 package main
 
 import (
 	"context"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"flag"
 	"io"
 	"os"
 	"testing"
 
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
+
+	"criticalsys.net/o365mbx/engine"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"o365mbx/engine"
 )
 
 func TestLoadAccessToken(t *testing.T) {
@@ -201,6 +213,11 @@ func TestOverrideConfigWithFlags(t *testing.T) {
 	// Reset flags for testing
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 
+	tenantID := fs.String("tenant-id", "", "")
+	clientID := fs.String("client-id", "", "")
+	clientSecret := fs.String("client-secret", "", "")
+	clientSecretFile := fs.String("client-secret-file", "", "")
+	clientSecretEnv := fs.Bool("client-secret-env", false, "")
 	tokenString := fs.String("token-string", "", "")
 	tokenFile := fs.String("token-file", "", "")
 	tokenEnv := fs.Bool("token-env", false, "")
@@ -236,6 +253,11 @@ func TestOverrideConfigWithFlags(t *testing.T) {
 
 	// Set ALL flags
 	_ = fs.Parse([]string{
+		"-tenant-id", "tenant-uuid-1",
+		"-client-id", "client-uuid-1",
+		"-client-secret", "secret-val-1",
+		"-client-secret-file", "secret-file-1",
+		"-client-secret-env",
 		"-token-string", "ts",
 		"-token-file", "tf",
 		"-token-env",
@@ -268,6 +290,11 @@ func TestOverrideConfigWithFlags(t *testing.T) {
 
 	flags := &cliFlags{
 		configPath:                 &dummyStr,
+		tenantID:                   tenantID,
+		clientID:                   clientID,
+		clientSecret:               clientSecret,
+		clientSecretFile:           clientSecretFile,
+		clientSecretEnv:            clientSecretEnv,
 		tokenString:                tokenString,
 		tokenFile:                  tokenFile,
 		tokenEnv:                   tokenEnv,
@@ -300,6 +327,11 @@ func TestOverrideConfigWithFlags(t *testing.T) {
 
 	overrideConfigWithFlagsLocal(cfg, fs, flags)
 
+	assert.Equal(t, "tenant-uuid-1", cfg.TenantID)
+	assert.Equal(t, "client-uuid-1", cfg.ClientID)
+	assert.Equal(t, "secret-val-1", cfg.ClientSecret)
+	assert.Equal(t, "secret-file-1", cfg.ClientSecretFile)
+	assert.True(t, cfg.ClientSecretEnv)
 	assert.Equal(t, "ts", cfg.TokenString)
 	assert.Equal(t, "tf", cfg.TokenFile)
 	assert.True(t, cfg.TokenEnv)

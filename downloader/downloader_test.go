@@ -1,15 +1,29 @@
+// Package downloader_test provides unit tests for the downloader library package.
+//
+// OBJECTIVE:
+// Validate Downloader constructor logic, token resolution, secretprotector decryption, and AuthProvider resolution.
+//
+// CORE COMPONENTS:
+// 1. TestDownloader_New: Tests Downloader instance creation and nil config validation.
+// 2. TestDownloader_LoadAccessToken: Tests token resolution from strings, files, and environment variables with secretprotector decryption.
+// 3. TestDownloader_ResolveAuthProvider_ClientCredentials: Tests provider resolution for Client Credentials flow.
+// 4. TestDownloader_ValidateFinalConfig: Tests configuration constraint checks.
+//
+// TEST STRATEGY:
+// Uses temporary directories, environment variable overrides, and secretprotector AES-256-GCM test keys to test library API behavior.
 package downloader_test
 
 import (
 	"bytes"
 	"context"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"o365mbx/downloader"
-	"o365mbx/engine"
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
+
+	"criticalsys.net/o365mbx/downloader"
+	"criticalsys.net/o365mbx/engine"
 
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
@@ -111,6 +125,43 @@ func TestDownloader_LoadAccessToken(t *testing.T) {
 	cfgMulti := &engine.Config{TokenString: "abc", TokenEnv: true}
 	_, errMulti := downloader.LoadAccessToken(cfgMulti)
 	assert.Error(t, errMulti)
+}
+
+func TestDownloader_ResolveAuthProvider_ClientCredentials(t *testing.T) {
+	ctx := context.Background()
+
+	// 1. Plaintext Client Credentials
+	cfgPlain := &engine.Config{
+		TenantID:     "tenant-123",
+		ClientID:     "client-456",
+		ClientSecret: "secret-789",
+	}
+	providerPlain, err := downloader.ResolveAuthProvider(cfgPlain)
+	require.NoError(t, err)
+	assert.NotNil(t, providerPlain)
+
+	// 2. Encrypted Client Secret File via secretprotector
+	masterKeyHex, err := libsecsecrets.GenerateKey()
+	require.NoError(t, err)
+	masterKeyBytes, err := libsecsecrets.ResolveKey(ctx, masterKeyHex, "", "")
+	require.NoError(t, err)
+
+	rawSecret := "my-super-secret-azure-client-secret"
+	encryptedSecretCiphertext, err := libsecsecrets.Encrypt(ctx, rawSecret, masterKeyBytes)
+	require.NoError(t, err)
+
+	tmpSecretFile := filepath.Join(t.TempDir(), "encrypted_client_secret.txt")
+	require.NoError(t, os.WriteFile(tmpSecretFile, []byte(encryptedSecretCiphertext), 0o600))
+
+	cfgEncrypted := &engine.Config{
+		TenantID:         "tenant-123",
+		ClientID:         "client-456",
+		ClientSecretFile: tmpSecretFile,
+		SecretMasterKey:  masterKeyHex,
+	}
+	providerEncrypted, err := downloader.ResolveAuthProvider(cfgEncrypted)
+	require.NoError(t, err)
+	assert.NotNil(t, providerEncrypted)
 }
 
 func TestDownloader_ValidateFinalConfig(t *testing.T) {

@@ -28,9 +28,9 @@ import (
 	"os/signal"
 	"syscall"
 
-	"o365mbx/apperrors"
-	"o365mbx/downloader"
-	"o365mbx/engine"
+	"criticalsys.net/o365mbx/apperrors"
+	"criticalsys.net/o365mbx/downloader"
+	"criticalsys.net/o365mbx/engine"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -61,6 +61,11 @@ func run(args []string, out io.Writer) error {
 	tokenFile := fs.String("token-file", "", "Path to a file containing the JWT token.")
 	tokenEnv := fs.Bool("token-env", false, "Read JWT token from JWT_TOKEN environment variable.")
 	removeTokenFile := fs.Bool("remove-token-file", false, "Remove the token file after use (only if -token-file is specified).")
+	tenantID := fs.String("tenant-id", "", "Microsoft Entra ID Tenant ID.")
+	clientID := fs.String("client-id", "", "Application / Client ID.")
+	clientSecret := fs.String("client-secret", "", "Plaintext Client Secret.")
+	clientSecretFile := fs.String("client-secret-file", "", "Path to AES-256-GCM encrypted Client Secret file via secretprotector.")
+	clientSecretEnv := fs.Bool("client-secret-env", false, "Read encrypted Client Secret from CLIENT_SECRET environment variable.")
 	secretMasterKey := fs.String("secret-master-key", "", "Raw 64-character hex master key for secretprotector AES decryption.")
 	secretMasterKeyEnv := fs.String("secret-master-key-env", "SECRETPROTECTOR_MASTER_KEY", "Environment variable name containing the master key for secretprotector.")
 	secretMasterKeyFile := fs.String("secret-master-key-file", "", "File path containing the master key for secretprotector.")
@@ -112,6 +117,11 @@ func run(args []string, out io.Writer) error {
 		tokenFile:                  tokenFile,
 		tokenEnv:                   tokenEnv,
 		removeTokenFile:            removeTokenFile,
+		tenantID:                   tenantID,
+		clientID:                   clientID,
+		clientSecret:               clientSecret,
+		clientSecretFile:           clientSecretFile,
+		clientSecretEnv:            clientSecretEnv,
 		secretMasterKey:            secretMasterKey,
 		secretMasterKeyEnv:         secretMasterKeyEnv,
 		secretMasterKeyFile:        secretMasterKeyFile,
@@ -180,24 +190,33 @@ func run(args []string, out io.Writer) error {
 	return dl.Execute(ctx, out)
 }
 
+// loadAccessToken wraps downloader.LoadAccessToken to resolve access tokens from configuration.
 func loadAccessToken(cfg *engine.Config) (string, error) {
 	return downloader.LoadAccessToken(cfg)
 }
 
+// isValidEmail wraps downloader.IsValidEmail to validate email address syntax.
 func isValidEmail(email string) bool {
 	return downloader.IsValidEmail(email)
 }
 
+// validateFinalConfig wraps downloader.ValidateFinalConfig to validate runtime config constraints.
 func validateFinalConfig(cfg *engine.Config) error {
 	return downloader.ValidateFinalConfig(cfg)
 }
 
+// cliFlags holds references to parsed command-line flags.
 type cliFlags struct {
 	configPath                 *string
 	tokenString                *string
 	tokenFile                  *string
 	tokenEnv                   *bool
 	removeTokenFile            *bool
+	tenantID                   *string
+	clientID                   *string
+	clientSecret               *string
+	clientSecretFile           *string
+	clientSecretEnv            *bool
 	secretMasterKey            *string
 	secretMasterKeyEnv         *string
 	secretMasterKeyFile        *string
@@ -239,6 +258,16 @@ func overrideConfigWithFlagsLocal(cfg *engine.Config, fs *flag.FlagSet, flags *c
 			cfg.TokenEnv = *flags.tokenEnv
 		case "remove-token-file":
 			cfg.RemoveTokenFile = *flags.removeTokenFile
+		case "tenant-id":
+			cfg.TenantID = *flags.tenantID
+		case "client-id":
+			cfg.ClientID = *flags.clientID
+		case "client-secret":
+			cfg.ClientSecret = *flags.clientSecret
+		case "client-secret-file":
+			cfg.ClientSecretFile = *flags.clientSecretFile
+		case "client-secret-env":
+			cfg.ClientSecretEnv = *flags.clientSecretEnv
 		case "secret-master-key":
 			cfg.SecretMasterKey = *flags.secretMasterKey
 		case "secret-master-key-env":

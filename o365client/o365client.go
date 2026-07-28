@@ -2,9 +2,13 @@
 // including message retrieval, attachment streaming, and mailbox management.
 //
 // OBJECTIVE:
-// This package serves as the "E" (Extract) in the ETL pipeline. It encapsulates
-// all communication with the Microsoft Graph API, providing a high-level interface
-// for the rest of the application to interact with O365 mailboxes.
+// Served as the primary Graph API communication client for mailbox inspection, message streaming, and folder management.
+//
+// CORE COMPONENTS:
+// 1. O365Client: High-level Graph API client wrapper.
+// 2. GetMessages: Delta sync & pagination query handler.
+// 3. GetAttachmentRawStream: Raw binary `$value` stream downloader for attachments and MIME envelopes.
+// 4. MoveMessage & GetOrCreateFolderIDByName: Mailbox routing and folder management operations.
 //
 // CORE FUNCTIONALITY:
 //  1. Authentication: Manages static token-based authentication for Graph API requests.
@@ -13,6 +17,9 @@
 //     MIME streams for item attachments (.msg/.eml).
 //  4. Mailbox Management: Retrieves folder structures, item counts, and storage statistics.
 //  5. Resilience: Implements API rate limiting and basic error mapping for Graph API responses.
+//
+// DATA FLOW:
+// Graph Request -> Kiota Request Adapter / HTTP Client -> OData Graph API Response -> Domain Models / AppErrors.
 package o365client
 
 import (
@@ -32,8 +39,8 @@ import (
 	"strings"
 	"time"
 
-	"o365mbx/apperrors"
-	"o365mbx/utils"
+	"criticalsys.net/o365mbx/apperrors"
+	"criticalsys.net/o365mbx/utils"
 
 	kiota "github.com/microsoft/kiota-abstractions-go"
 	msgraphsdk "github.com/microsoftgraph/msgraph-sdk-go"
@@ -91,19 +98,24 @@ type O365Client struct {
 // --- Initialization ---
 
 // NewO365Client initializes a new Graph API client with the provided access token and random source.
-// It sets up the authentication provider and request adapter for the Microsoft Graph SDK.
+// It sets up the static authentication provider and request adapter for the Microsoft Graph SDK.
 func NewO365Client(accessToken string, rng *rand.Rand) (*O365Client, error) {
 	authProvider, err := NewStaticTokenAuthenticationProvider(accessToken)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auth provider: %w", err)
 	}
+	return NewO365ClientWithAuthProvider(authProvider, rng)
+}
 
-	// For production, we use the default GraphRequestAdapter
+// NewO365ClientWithAuthProvider initializes a new Graph API client with any Kiota AuthenticationProvider.
+func NewO365ClientWithAuthProvider(authProvider AuthenticationProvider, rng *rand.Rand) (*O365Client, error) {
+	if authProvider == nil {
+		return nil, fmt.Errorf("authProvider cannot be nil")
+	}
 	adapter, err := msgraphsdk.NewGraphRequestAdapter(authProvider)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create graph adapter: %w", err)
 	}
-
 	return NewO365ClientWithAdapter(adapter, rng), nil
 }
 

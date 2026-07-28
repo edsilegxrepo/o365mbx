@@ -190,17 +190,33 @@ The `metadata.json` file provides a detailed overview of the downloaded email.
 }
 ```
 
-## Token Management
+## Token & Credential Management
 
-The application requires a valid JWT access token for the Microsoft Graph API. You must provide the token using **exactly one** of the following methods:
+The application requires authentication to interact with the Microsoft Graph API. You can authenticate using either **OAuth2 Client Credentials Flow** (with automatic background token refresh) or a **Static Bearer Token**:
+
+### Option 1: OAuth2 Client Credentials Flow (Automatic Token Refresh)
+
+Provide `tenantID`, `clientID`, and a client secret source (`clientSecret`, `clientSecretFile`, or `clientSecretEnv`). The library automatically requests access tokens from Microsoft Entra ID (`https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/token`) and handles **automatic token refresh in the background** before expiration.
+
+| Config / Flag        | Environment Variable | Description                                                     |
+| -------------------- | -------------------- | --------------------------------------------------------------- |
+| `-tenant-id` / `tenantID`   |                     | Microsoft Azure AD Tenant ID (UUID).                            |
+| `-client-id` / `clientID`   |                     | Application (Client) ID (UUID).                                 |
+| `-client-secret` / `clientSecret` |               | Plaintext Client Secret.                                        |
+| `-client-secret-file` / `clientSecretFile` |         | Path to file containing AES-256-GCM encrypted Client Secret.   |
+| `-client-secret-env` / `clientSecretEnv` | `CLIENT_SECRET` | Read AES-256-GCM encrypted Client Secret from environment.    |
+
+### Option 2: Static Bearer Token
+
+For ephemeral single-run execution, supply a pre-acquired JWT access token using **exactly one** of the following methods:
 
 | Flag                | Environment Variable | Description                                           |
 | ------------------- | -------------------- | ----------------------------------------------------- |
 | `-token-string`     |                      | Pass the token directly as a string.                  |
-| `-token-file`       |                      | Provide the path to a file containing the token.      |
-| `-token-env`        | `JWT_TOKEN`          | Read the token from the `JWT_TOKEN` env var.          |
+| `-token-file`       |                      | Provide the path to an AES-256-GCM encrypted token file. |
+| `-token-env`        | `JWT_TOKEN`          | Read AES-256-GCM encrypted token from `JWT_TOKEN` env. |
 
-For added security, you can use the `-remove-token-file` flag to automatically delete the token file after the application finishes.
+For added security, stored credentials at rest (`-token-file`, `-token-env`, `-client-secret-file`, `-client-secret-env`) **MUST** be encrypted via `secretprotector` (`libsecsecrets`). Use `-remove-token-file` to delete temporary token files after execution.
 
 ## Command-line Arguments
 
@@ -211,10 +227,16 @@ All configuration options can be controlled via command-line arguments. Any flag
 | **Required**                    |                                                                           |          |         |
 | `-mailbox`                      | The email address of the mailbox to download. Can also be set in config.  | **Yes**  |         |
 | `-workspace`                    | The absolute path for storing artifacts. Required unless `-healthcheck` is used. | Conditional |         |
-| **Token (Choose one)**          | Source can be string, file or environment variable                        | **Yes**  |         |
+| **Client Credentials (Auto-Refresh)** |                                                                     |          |         |
+| `-tenant-id`                    | Microsoft Entra ID Tenant ID.                                             | No       |         |
+| `-client-id`                    | Application / Client ID.                                                  | No       |         |
+| `-client-secret`                | Plaintext Client Secret.                                                  | No       |         |
+| `-client-secret-file`           | Path to AES-256-GCM encrypted Client Secret file via `secretprotector`.  | No       |         |
+| `-client-secret-env`            | Read encrypted Client Secret from `CLIENT_SECRET` environment variable.   | No       | `false` |
+| **Token (Choose one)**          | Static bearer token source (string, file, or environment variable)       | Conditional |      |
 | `-token-string`                 | JWT token as a string.                                                    |          |         |
-| `-token-file`                   | Path to a file containing the JWT token.                                  |          |         |
-| `-token-env`                    | Read JWT token from the `JWT_TOKEN` environment variable.                 |          | `false` |
+| `-token-file`                   | Path to AES-256-GCM encrypted JWT token file.                             |          |         |
+| `-token-env`                    | Read encrypted JWT token from `JWT_TOKEN` environment variable.           |          | `false` |
 | `-remove-token-file`            | Remove the token file after use.                                          | No       | `false` |
 | `-secret-master-key`            | Raw 64-char hex master key for `secretprotector` AES-256-GCM decryption. | No       |         |
 | `-secret-master-key-env`        | Env var name storing master key (defaults to `SECRETPROTECTOR_MASTER_KEY`). | No     | `SECRETPROTECTOR_MASTER_KEY` |
@@ -337,7 +359,7 @@ For maximum security, it is recommended to use an Azure App Registration with th
 
 ### 0. Embedding as a Go Library (e.g., in `service-gateway`)
 
-`o365mbx` can be embedded directly into other Go applications (such as microservices or daemon gateways) via the high-level `downloader` package:
+`o365mbx` can be embedded directly into other Go applications (such as microservices or daemon gateways) via the high-level `downloader` package with Client Credentials Flow (automatic token refresh):
 
 ```go
 package main
@@ -356,7 +378,9 @@ func main() {
 	cfg := &engine.Config{
 		MailboxName:          "user@example.com",
 		WorkspacePath:        "/data/mailboxes/user1",
-		TokenString:          "YOUR_JWT_TOKEN",
+		TenantID:             "00000000-0000-0000-0000-000000000000",
+		ClientID:             "11111111-1111-1111-1111-111111111111",
+		ClientSecret:         "YOUR_AZURE_CLIENT_SECRET", // Auto-refreshed via Entra ID
 		ProcessingMode:       "full",
 		ConvertBody:          "text",
 		MaxParallelDownloads: 5,
@@ -375,7 +399,50 @@ func main() {
 
 ---
 
-### 1. Basic Run with Token String
+### 1. Client Credentials Mode with Automatic Token Refresh (CLI)
+
+Use an Azure App Registration with automatic background token acquisition and refresh:
+
+```shell
+./o365mbx \
+    -mailbox "user@example.com" \
+    -workspace "/path/to/your/output" \
+    -tenant-id "00000000-0000-0000-0000-000000000000" \
+    -client-id "11111111-1111-1111-1111-111111111111" \
+    -client-secret "YOUR_AZURE_CLIENT_SECRET"
+```
+
+### 2. Client Credentials with Encrypted Secret File (`secretprotector`)
+
+Store the client secret encrypted at rest and supply a master key file:
+
+```shell
+./o365mbx \
+    -mailbox "user@example.com" \
+    -workspace "/path/to/your/output" \
+    -tenant-id "00000000-0000-0000-0000-000000000000" \
+    -client-id "11111111-1111-1111-1111-111111111111" \
+    -client-secret-file "/secrets/client_secret.enc" \
+    -secret-master-key-file "/secrets/master.key"
+```
+
+### 3. Client Credentials with Encrypted Environment Secret (`CLIENT_SECRET`)
+
+Read the encrypted client secret from environment variables:
+
+```shell
+export CLIENT_SECRET="AES256-GCM:base64..."
+export SECRETPROTECTOR_MASTER_KEY="64_CHAR_HEX_MASTER_KEY"
+
+./o365mbx \
+    -mailbox "user@example.com" \
+    -workspace "/path/to/your/output" \
+    -tenant-id "00000000-0000-0000-0000-000000000000" \
+    -client-id "11111111-1111-1111-1111-111111111111" \
+    -client-secret-env
+```
+
+### 4. Basic Run with Static Token String
 
 ```shell
 ./o365mbx \
@@ -384,19 +451,19 @@ func main() {
     -token-string "YOUR_ACCESS_TOKEN"
 ```
 
-### 2. Incremental Run Using a Token File
+### 5. Incremental Run Using a Static Encrypted Token File
 
 ```shell
 ./o365mbx \
     -mailbox "user@example.com" \
     -workspace "/path/to/your/output" \
-    -token-file "/path/to/token.txt" \
-    -remove-token-file \
+    -token-file "/path/to/token.enc" \
+    -secret-master-key-file "/secrets/master.key" \
     -processing-mode incremental \
     -state "/path/to/state.json"
 ```
 
-### 3. High-Performance Run Using a Config File and Overrides
+### 6. High-Performance Run Using a Config File and Overrides
 
 This example uses a `config.json` file but overrides the parallelism and rate limits with command-line flags.
 
@@ -410,7 +477,7 @@ This example uses a `config.json` file but overrides the parallelism and rate li
     -api-burst 20
 ```
 
-### 4. Route Mode with Default Folders
+### 7. Route Mode with Default Folders
 
 This example processes all messages from the "Inbox", saves the artifacts, and moves the original messages to either a "Processed" or "Error" folder in the mailbox.
 
@@ -418,7 +485,9 @@ This example processes all messages from the "Inbox", saves the artifacts, and m
 ./o365mbx \
     -mailbox "user@example.com" \
     -workspace "/path/to/your/output" \
-    -token-env \
+    -tenant-id "00000000-0000-0000-0000-000000000000" \
+    -client-id "11111111-1111-1111-1111-111111111111" \
+    -client-secret-env \
     -processing-mode route
 ```
 

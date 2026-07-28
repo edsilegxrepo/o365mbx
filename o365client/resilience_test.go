@@ -3,13 +3,21 @@
 
 // Package o365client_test contains integration and resilience tests for the o365client package.
 //
-// This file specifically focuses on resilience testing using Microsoft Dev Proxy
-// to simulate real-world network conditions, API failures, and rate limiting.
+// OBJECTIVE:
+// Provide chaos, load, and resilience testing using Microsoft Dev Proxy or httpmock fallback to simulate
+// rate limits (429), server errors (500/503), token expiration, high-concurrency pressure, and large streaming downloads.
+//
+// CORE COMPONENTS:
+// 1. TestResilience_*: Exercises retry logic, rate limit backoffs, token auto-refresh, PDF conversion modes, and interrupted sync recovery.
+// 2. TestStress_*: Tests multi-worker parallel folder sync, rapid iterative runs, and memory pressure.
+//
+// TEST STRATEGY:
+// Automatically detects Microsoft Dev Proxy (`devproxy`) or falls back to `httpmock` HTTP transport interception
+// to test engine behavior under extreme fault injection and stress conditions.
 package o365client_test
 
 import (
 	"context"
-	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"crypto/tls"
 	"fmt"
 	"net/http"
@@ -23,11 +31,15 @@ import (
 	"testing"
 	"time"
 
-	"o365mbx/emailprocessor"
-	"o365mbx/engine"
-	"o365mbx/filehandler"
-	"o365mbx/o365client"
+	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 
+	"criticalsys.net/o365mbx/emailprocessor"
+	"criticalsys.net/o365mbx/engine"
+	"criticalsys.net/o365mbx/filehandler"
+	"criticalsys.net/o365mbx/o365client"
+
+	"github.com/jarcoal/httpmock"
+	kiota "github.com/microsoft/kiota-abstractions-go"
 	msgraphsdk "github.com/microsoftgraph/msgraph-sdk-go"
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
@@ -1352,4 +1364,45 @@ func TestResilience_SecretProtectorEncryptedToken(t *testing.T) {
 		time.Sleep(3 * time.Second)
 	}
 	require.True(t, success, "SecretProtector encrypted token execution failed under proxy chaos: %v", runErr)
+}
+
+func TestResilience_ClientCredentialsTokenLifecycle(t *testing.T) {
+	ctx := context.Background()
+
+	provider, err := o365client.NewClientCredentialsAuthenticationProvider("resilience-tenant-id", "resilience-client-id", "resilience-secret")
+	require.NoError(t, err)
+
+	httpmock.Activate()
+	defer httpmock.DeactivateAndReset()
+
+	mockHTTP := &http.Client{}
+	httpmock.ActivateNonDefault(mockHTTP)
+	provider.SetHTTPClient(mockHTTP)
+
+	postCalls := 0
+	httpmock.RegisterResponder("POST", "https://login.microsoftonline.com/resilience-tenant-id/oauth2/v2.0/token",
+		func(req *http.Request) (*http.Response, error) {
+			postCalls++
+			if postCalls == 1 {
+				return httpmock.NewStringResponse(200, `{"access_token": "devproxy-token-v1-initial", "expires_in": 1, "token_type": "Bearer"}`), nil
+			}
+			return httpmock.NewStringResponse(200, `{"access_token": "devproxy-token-v2-refreshed", "expires_in": 3600, "token_type": "Bearer"}`), nil
+		})
+
+	// 1. Initial acquisition
+	tok1, err := provider.GetToken(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "devproxy-token-v1-initial", tok1)
+	assert.Equal(t, 1, postCalls)
+
+	// 2. Simulate token expiration and execute request requiring token refresh
+	reqInfo := kiota.NewRequestInformation()
+	err = provider.AuthenticateRequest(ctx, reqInfo, nil)
+	assert.NoError(t, err)
+
+	// 3. Verify refreshed token is retrieved automatically
+	tok2, err := provider.GetToken(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, "devproxy-token-v2-refreshed", tok2)
+	assert.Equal(t, 2, postCalls)
 }

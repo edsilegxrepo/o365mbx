@@ -7,6 +7,12 @@
 // It uses a multi-stage producer-consumer pipeline with worker pools to achieve high throughput
 // while respecting API rate limits and memory constraints.
 //
+// CORE COMPONENTS:
+// 1. RunEngine: Orchestrates workspace validation, dependency checks, health check, and execution mode dispatch.
+// 2. runDownloadMode: Executes parallelized multi-worker producer-consumer download pipeline.
+// 3. runAggregator: Manages post-sync mailbox message relocation (route mode) and summary status reports.
+// 4. DownloadState: Thread-safe state tracking for message completion, attachment counts, and error propagation.
+//
 // CORE FUNCTIONALITY:
 //  1. Pipeline Orchestration: Coordinates Message Producers, Body Processors, and Attachment Downloaders.
 //  2. State Management: Tracks the progress of individual messages and their attachments.
@@ -32,14 +38,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"o365mbx/apperrors"
-	"o365mbx/emailprocessor"
-	"o365mbx/filehandler"
-	"o365mbx/o365client"
+	"criticalsys.net/o365mbx/apperrors"
+	"criticalsys.net/o365mbx/emailprocessor"
+	"criticalsys.net/o365mbx/filehandler"
+	"criticalsys.net/o365mbx/o365client"
 
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
 
-	"o365mbx/utils"
+	"criticalsys.net/o365mbx/utils"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -89,6 +95,7 @@ type DownloadState struct {
 	Attachments          []filehandler.AttachmentMetadata
 	Cancel               context.CancelFunc
 	Mu                   sync.Mutex
+	HasFailed            bool
 }
 
 // --- Entry Point ---
@@ -281,8 +288,11 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 							finalErr = fmt.Errorf("body processing error: %w; and save error: %w", processingErr, saveErr)
 						}
 						log.WithFields(log.Fields{"messageID": messageID, "error": finalErr}).Errorf("Error saving email message.")
-						if msgPath != "" && cfg.ProcessingMode != "route" {
-							_ = fileHandler.SaveError(msgPath, []error{finalErr})
+						if cfg.ProcessingMode != "route" {
+							if msgPath != "" {
+								_ = fileHandler.SaveError(msgPath, []error{finalErr})
+							}
+							atomic.AddUint32(&stats.JobErrorCount, 1)
 						}
 						if cfg.ProcessingMode == "route" {
 							resultsChan <- ProcessingResult{MessageID: messageID, Err: finalErr, IsInitialization: true, TotalTasks: 1, MsgPath: msgPath, Cancel: msgCancel}
@@ -304,6 +314,7 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 							log.WithFields(log.Fields{"messageID": messageID, "error": attachmentFetchErr}).Error("Failed to fetch attachments for message.")
 							if msgPath != "" && cfg.ProcessingMode != "route" {
 								_ = fileHandler.SaveError(msgPath, []error{attachmentFetchErr})
+								atomic.AddUint32(&stats.JobErrorCount, 1)
 							}
 							if cfg.ProcessingMode == "route" {
 								resultsChan <- ProcessingResult{MessageID: messageID, Err: attachmentFetchErr, IsInitialization: true, TotalTasks: 1, MsgPath: msgPath, Cancel: msgCancel}
@@ -320,6 +331,7 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 							ExpectedAttachments: len(attachments),
 							Attachments:         make([]filehandler.AttachmentMetadata, 0, len(attachments)),
 							Cancel:              msgCancel,
+							HasFailed:           processingErr != nil,
 						})
 
 						if cfg.ProcessingMode == "route" {
@@ -333,6 +345,7 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 								log.WithField("messageID", messageID).Warn("Message timeout while queuing attachments.")
 								if msgPath != "" && cfg.ProcessingMode != "route" {
 									_ = fileHandler.SaveError(msgPath, []error{msgCtx.Err()})
+									atomic.AddUint32(&stats.JobErrorCount, 1)
 								}
 								if cfg.ProcessingMode == "route" {
 									// Report remaining attachments as errors so aggregator doesn't hang
@@ -357,6 +370,11 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 							// No attachments, but we still need to report result if in route mode
 							resultsChan <- ProcessingResult{MessageID: messageID, Err: processingErr, IsInitialization: true, TotalTasks: 1, MsgPath: msgPath, Cancel: msgCancel}
 						} else {
+							if processingErr != nil {
+								atomic.AddUint32(&stats.JobErrorCount, 1)
+							} else {
+								atomic.AddUint32(&stats.JobProcessedCount, 1)
+							}
 							msgCancel()
 						}
 					}
@@ -399,8 +417,11 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 					state.CompletedAttachments++
 					if err == nil { // Only append metadata on success
 						state.Attachments = append(state.Attachments, attMetadatas...)
+					} else {
+						state.HasFailed = true
 					}
 					isLastAttachment := state.CompletedAttachments == state.ExpectedAttachments
+					hasFailed := state.HasFailed
 					cancelFn := state.Cancel
 					state.Mu.Unlock()
 
@@ -414,6 +435,14 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 								_ = fileHandler.SaveError(job.MsgPath, []error{metaErr})
 							}
 							err = metaErr // The metadata error takes precedence for the final report.
+							hasFailed = true
+						}
+						if cfg.ProcessingMode != "route" {
+							if hasFailed {
+								atomic.AddUint32(&stats.JobErrorCount, 1)
+							} else {
+								atomic.AddUint32(&stats.JobProcessedCount, 1)
+							}
 						}
 						// Clean up state for the message
 						messageStates.Delete(job.MessageID)

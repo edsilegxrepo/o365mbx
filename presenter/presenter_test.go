@@ -1,7 +1,15 @@
 // Package presenter provides formatted output and display logic for health checks
 // and message details.
 //
-// This file contains unit tests for the presenter package.
+// OBJECTIVE:
+// Provide unit testing for health check rendering, subject truncation, multi-folder alignment, tabwriter failures, and context cancellations.
+//
+// CORE COMPONENTS:
+// 1. TestRunHealthCheckMode_*: Tests single/multi-folder tabular health check output and write errors.
+// 2. TestRunMessageDetailsMode_*: Tests message details tabular rendering, subject truncation (>75 chars), and streaming cancellation.
+//
+// TEST STRATEGY:
+// Uses gomock mock O365Client and `bytes.Buffer` output streams to verify formatted tabular string output deterministically.
 package presenter_test
 
 import (
@@ -12,9 +20,9 @@ import (
 	"strings"
 	"testing"
 
-	"o365mbx/mocks"
-	"o365mbx/o365client"
-	"o365mbx/presenter"
+	"criticalsys.net/o365mbx/mocks"
+	"criticalsys.net/o365mbx/o365client"
+	"criticalsys.net/o365mbx/presenter"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

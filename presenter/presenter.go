@@ -2,15 +2,20 @@
 // and message details.
 //
 // OBJECTIVE:
-// This package is responsible for the "Presentation" layer of the application. It takes
-// raw data structures from the engine or client and formats them into human-readable
-// tables and summaries for the console.
+// Responsible for presenting CLI tabular health checks and message detail streams.
+//
+// CORE COMPONENTS:
+// 1. RunHealthCheckMode: Retrieves and formats mailbox folder statistics into clean tabwriter tables.
+// 2. RunMessageDetailsMode: Streams message metadata for a specific folder and formats subject, sender, and date columns.
 //
 // CORE FUNCTIONALITY:
 //  1. Health Check Display: Formats mailbox-level statistics and folder lists into
 //     aligned tables using 'text/tabwriter'.
 //  2. Message Detail Streaming: Streams and displays metadata for individual messages
 //     within a folder, providing real-time feedback during diagnostic runs.
+//
+// DATA FLOW:
+// O365Client HealthCheck / Message Details -> Presenter Tabwriter -> Formatted Console Output Stream.
 package presenter
 
 import (
@@ -19,8 +24,8 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"o365mbx/o365client"
-	"o365mbx/utils"
+	"criticalsys.net/o365mbx/o365client"
+	"criticalsys.net/o365mbx/utils"
 
 	log "github.com/sirupsen/logrus"
 )

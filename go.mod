@@ -1,9 +1,9 @@
-module o365mbx
+module criticalsys.net/o365mbx
 
 go 1.26
 
 require (
-	criticalsys/secretprotector v0.0.0
+	criticalsys.net/secretprotector v0.0.1
 	github.com/chromedp/cdproto v0.0.0-20260719223732-95f6af754cfe
 	github.com/chromedp/chromedp v0.16.0
 	github.com/jarcoal/httpmock v1.4.1
@@ -64,4 +64,4 @@ require (
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
 
-replace criticalsys/secretprotector => ../secretprotector
+replace criticalsys.net/secretprotector => ../secretprotector

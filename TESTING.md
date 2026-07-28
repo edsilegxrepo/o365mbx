@@ -144,6 +144,9 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 | | `TestRunDownloadMode_AttachmentFetchErr` | Logic: Attachment discovery failure. | Handled as a non-fatal error; message moved to Error folder. |
 | | `TestRunDownloadMode_QueuingTimeout` | Hardening: Context cancellation race. | Verified that queuing is interrupted safely during message timeouts. |
 | | `TestRunDownloadMode_FinalMetadataError` | Logic: Post-download metadata failure. | Verifies that metadata write errors are captured and reported. |
+| | `TestRunDownloadMode_FullMode_AttachmentContextAndErrorPersistence` | Logic: Full sync attachment & error state. | Verifies non-canceled context and error.json logging in full mode. |
+| | `TestRunDownloadMode_SaveStateFail` | Logic: State save failure. | Handles state file save failure gracefully. |
+| | `TestValidateWorkspacePath_IOErrors` | Hardening: IO error handling. | Handles directory read / stat permission errors. |
 | | `TestRunAggregator_FolderCreationFail` | Logic: Aggregator setup failure. | Aggregator exits if destination folders cannot be resolved. |
 | | `TestRunAggregator_MoveMessageFail` | Logic: Relocation failure. | Aggregator logs error but continues if message move fails. |
 | | `TestRunAggregator_UnknownMessageID` | Robustness: Unexpected results. | Aggregator handles results for unknown IDs without crashing. |
@@ -151,50 +154,73 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 | | `TestConfig_Validate` | Validate schema and constraints. | Rejects `MaxParallelDownloads < 1` or missing `MailboxName`. |
 | | `TestConfig_Validate_ChromiumPaths` | Logic: Browser path validation. | Handles directory paths or non-existent files for ChromiumPath. |
 | | `TestConfig_Validate_Ranges` | Logic: Boundary value validation. | Ensures negative retries, bursts, and invalid enums are rejected. |
+| | `TestConfig_ValidateChromiumPath` | Logic: Executable path validation. | Verifies path validity for Chromium binary. |
+| | `TestConfig_Validate_Remaining` | Logic: Extended validation bounds. | Validates non-executable path rejections. |
 | | `TestLoadConfig` | Logic: Configuration loading from file. | Validates JSON deserialization and path resolution. |
-| **O365Client** | `TestO365Client_GetMessages_httpmock` | Integration: Parse OData Delta responses. | Successfully maps JSON `value` and `@odata.deltaLink` to models. |
+| **O365Client** | `TestNewO365Client` | Construction: Client initialization. | Verifies O365Client creation with AuthProvider. |
+| | `TestClientCredentialsAuthenticationProvider_ErrorBranches` | Auth: Token request failures. | Covers HTTP 400/401 and network errors during token retrieval. |
+| | `TestO365Client_GetMessages_httpmock` | Integration: Parse OData Delta responses. | Successfully maps JSON `value` and `@odata.deltaLink` to models. |
+| | `TestO365Client_GetMessages_Incremental` | Integration: Captured delta link. | Verifies captured delta link persistence in state. |
+| | `TestO365Client_GetMessages_Pagination_httpmock` | Integration: Message list pagination. | Traverses multi-page message lists via OData nextLink. |
+| | `TestO365Client_GetMessages_Pagination_Errors` | Integration: Handle OData Delta pagination errors. | Handles 500 errors during nextLink traversal or context cancellation. |
+| | `TestO365Client_GetMessages_PaginationBranches` | Integration: Multi-page error paths. | Verified that pagination stops on intermediate page failure. |
+| | `TestO365Client_GetMessages_NilResponse` | Integration: Null response branch. | Handles cases where the API returns 200 OK but null body. |
 | | `TestO365Client_GetAttachmentRawStream_httpmock` | Integration: Handle `$value` binary streams. | `io.ReadCloser` returned and correctly streams bytes to the caller. |
 | | `TestO365Client_GetAttachmentRawStream_Complex` | Integration: Native HTTP branches. | Covers URL parsing and transport cloning logic. |
+| | `TestO365Client_GetAttachmentRawStream_DoError` | Integration: Transport stream errors. | Handles HTTP client transport errors during raw stream retrieval. |
+| | `TestO365Client_GetAttachmentRawStream_Errors` | Integration: Attachment stream error mapping. | Maps status code errors (404, 500) during raw stream fetch. |
+| | `TestO365Client_GetAttachmentRawStream_RequestError` | Integration: Request construction errors. | Handles invalid URLs or request preparation failures. |
 | | `TestO365Client_GetAttachmentRawStream_FinalBranches` | Integration: HTTP status branches. | Handles 404 and request creation failures in raw stream. |
 | | `TestO365Client_GetMessageAttachments_httpmock` | Integration: Fetch attachment metadata. | Correctly parses list of attachments for a specific message. |
 | | `TestO365Client_MoveMessage_Success` | Integration: Successful move. | Verifies move operation completion. |
 | | `TestO365Client_GetOrCreateFolderIDByName_httpmock` | Integration: Folder management. | Handles folder lookup by name and creation if missing. |
 | | `TestO365Client_GetOrCreateFolderIDByName_Errors` | Integration: Folder failure paths. | Handles API failures during lookup or creation. |
+| | `TestO365Client_GetAllFolders_Pagination_httpmock` | Integration: Folder list pagination. | Traverses multi-page folder listings via nextLink. |
 | | `TestO365Client_GetMailboxHealthCheck_httpmock` | Integration: Aggregate folder metadata. | Calculates `TotalMessages` and `TotalMailboxSize` from folder list. |
 | | `TestO365Client_GetMailboxHealthCheck_InboxAndSorting` | Logic: Health check sorting. | Verifies alphabetical sorting and Inbox-specific date retrieval. |
+| | `TestO365Client_GetMailboxHealthCheck_InboxLastMessageError` | Logic: Healthcheck inbox error. | Handles failures when retrieving last message date for Inbox. |
 | | `TestO365Client_GetMailboxHealthCheck_NilFields` | Robustness: Nil field handling. | Verifies behavior when Graph returns null for counts or names. |
+| | `TestO365Client_GetMailboxStats_httpmock` | Integration: Mailbox statistics lookup. | Parses folder item counts for mailbox status report. |
 | | `TestO365Client_GetMessageDetailsForFolder_httpmock` | Integration: Folder content streaming. | Streams message metadata from a specific folder to a channel. |
 | | `TestO365Client_GetMessageDetailsForFolder_EdgeCases` | Integration: Missing recipients. | Handles messages with empty From or To fields. |
 | | `TestO365Client_GetMessageDetailsForFolder_Pagination` | Integration: Multi-page details. | Verifies pagination traversal for message metadata. |
 | | `TestO365Client_Errors_httpmock` | Integration: Map OData errors to AppErrors. | HTTP 401/403/429 results in appropriate `apperrors.APIError`. |
 | | `TestO365Client_HandleError` | Logic: Internal error wrapper. | Ensures context deadlines and API errors are correctly processed. |
+| | `TestO365Client_HandleError_Complete` | Logic: Error classification depth. | Fully tests OData error code unwrapping. |
 | | `TestO365Client_HandleError_WithStatusCode` | Logic: Detailed error mapping. | Extracts status codes from embedded API errors. |
 | | `TestO365Client_ParseFolderSize` | Logic: Data type normalization & Kiota UntypedNode. | Handles Kiota `UntypedNumber`, `UntypedNode`, `json.Number`, `string`, `int64`, and `float64`. |
 | | `TestStaticTokenAuthenticationProvider` | Auth: Token injection logic. | Verifies static token header injection for Graph requests. |
 | | `TestStaticTokenAuthenticationProvider_HeadersNil` | Auth: Lazy initialization. | Verifies header map creation if missing in RequestInformation. |
-| | `TestO365Client_GetMessages_Incremental` | Integration: Captured delta link. | Verifies captured delta link persistence in state. |
-| | `TestO365Client_GetMessages_Pagination_Errors` | Integration: Handle OData Delta pagination errors. | Handles 500 errors during nextLink traversal or context cancellation. |
-| | `TestO365Client_GetMessages_PaginationBranches` | Integration: Multi-page error paths. | Verified that pagination stops on intermediate page failure. |
-| | `TestO365Client_GetMessages_NilResponse` | Integration: Null response branch. | Handles cases where the API returns 200 OK but null body. |
-| **FileHandler** | `TestFileHandler_CreateWorkspace` | Security: Workspace initialization. | Verifies directory creation and security checks (symlinks). |
+| **FileHandler** | `TestFileHandler_CopyWithContext` | Utilities: Context-aware streaming copy. | Verifies copyWithContext respects cancellation. |
+| | `TestFileHandler_CreateWorkspace` | Security: Workspace initialization. | Verifies directory creation and security checks (symlinks). |
 | | `TestFileHandler_CreateWorkspace_Errors` | Logic: Workspace creation fail. | Handles MkdirAll failures (e.g. parent is a file). |
+| | `TestFileHandler_CreateWorkspace_Symlink` | Security: Symlink protection. | Rejects workspace creation if target is a symbolic link. |
 | | `TestFileHandler_SaveMessage` | Storage: Directory & Metadata creation. | Created `body.txt` and `metadata.json` contain valid, expected content using `os.OpenRoot`. |
 | | `TestFileHandler_SaveMessage_DetailedPaths` | Logic: Varied body types. | Verifies handling of []byte bodies and Text/PDF format flags. |
+| | `TestFileHandler_SaveMessage_Errors` | Storage: Message save failures. | Handles filesystem errors during body or metadata save. |
 | | `TestFileHandler_SaveMessage_HTML` | Logic: Content-type detection. | Files saved with `.html` extension if content contains `<html>`. |
 | | `TestFileHandler_SaveFileAttachment` | Logic: Standard file attachment storage. | Saves binary content with correct naming and sequence prefix using `os.OpenRoot`. |
+| | `TestFileHandler_SaveFileAttachment_StreamingFallback` | Storage: $value fallback streaming. | Streams attachments when ContentBytes is nil. |
+| | `TestFileHandler_SaveItem_Inlines` | Storage: Inline attachment extraction. | Extracts inline images when attachmentExtractionL1 is inlines. |
 | | `TestFileHandler_SaveItemAttachment_Extractor` | Logic: MIME parsing and nested extraction. | Extracts body and Level 1 attachments from ItemAttachments using `os.OpenRoot`. |
 | | `TestFileHandler_SaveItemAttachment_Extractor_Errors` | Logic: Extraction failure paths. | Handles stream errors and invalid MIME headers during extraction. |
+| | `TestFileHandler_ExtractFilesFromEnvelope_RawMode` | Logic: Raw extraction mode. | Verifies no attachments extracted when msgHandler is raw. |
 | | `TestFileHandler_extractFilesFromEnvelope_WriteError` | Logic: Extraction write fail. | Gracefully handles IO errors during nested file extraction. |
+| | `TestFileHandler_SaveAttachment_Errors` | Logic: Save attachment failures. | Handles invalid message directory roots. |
 | | `TestFileHandler_SaveAttachment_Large` | Logic: Threshold-based handling. | Large attachments are handled via correct path and memory logic. |
 | | `TestFileHandler_WriteAttachmentsToMetadata` | IO: Metadata updates. | Correctly updates `metadata.json` with final attachment list using `os.OpenRoot`. |
 | | `TestFileHandler_WriteAttachmentsToMetadata_ReadError` | IO: Update read fail. | Handles cases where metadata.json cannot be reopened for update. |
+| | `TestFileHandler_Metadata_Errors` | Logic: Metadata error handling. | Handles JSON unmarshal and write errors during metadata updates. |
+| | `TestFileHandler_NewFileHandler_Limiter` | Architecture: Bandwidth limiter setup. | Verifies rate.Limiter initialization when bandwidthLimitMBs > 0. |
 | | `TestFileHandler_Errors` | Logic: Storage error handling. | Handles permission issues and disk space errors gracefully. |
 | | `TestFileHandler_SaveState` | IO: JSON state persistence. | `state.json` is correctly serialized/deserialized with atomic safety (temp file + rename) and `os.OpenRoot`. |
 | | `TestFileHandler_SaveState_Errors` | Logic: State write failure. | Handles directory access errors during state saving. |
 | | `TestFileHandler_LoadState` | IO: State retrieval. | Loads delta links from disk; returns empty state if missing. |
 | | `TestFileHandler_LoadState_Malformed` | IO: Corrupted state. | Returns error on invalid JSON state files. |
+| | `TestFileHandler_State` | IO: RunState loading & saving. | Verifies roundtrip state file loading and saving. |
 | | `TestFileHandler_GetMutex_Concurrency` | Logic: Thread-safe IO. | Verifies internal mutex pooling for safe concurrent file access. |
 | | `TestFileHandler_ToRecipient_Complete` | Logic: Edge case recipients. | Handles nil recipients or missing email addresses in Graph models. |
+| | `TestFileHandler_ToRecipient_Nil` | Logic: Nil recipient handling. | Safely maps nil recipient models to empty Recipient struct. |
 | | `TestSanitizeFileName` | Security: OS-safe filename generation. | Replaces `/ \ : * ? " < > |` and `..` with `_`. |
 | | `TestFileHandler_SaveError` | Logic: Per-message error reporting. | Generates `error.json` with timestamps and descriptions on failure. |
 | | `TestFileHandler_SaveError_UnmarshalError` | Logic: Appending to invalid JSON. | Handles corrupted error.json files by overwriting instead of failing. |
@@ -202,8 +228,12 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 | | `TestFileHandler_SaveStatusReport_MarshalError` | Logic: Report IO failure. | Handles workspace access errors during reporting. |
 | **EmailProcessor** | `TestEmailProcessor_IsHTML` | Logic: Detect HTML content. | Correctly identifies strings containing HTML tags. |
 | | `TestEmailProcessor_CleanHTML` | Logic: HTML to Markdown conversion. | Verifies sanitization and link/image preservation. |
+| | `TestEmailProcessor_CleanHTML_BlockEdgeCases` | Logic: Block-level HTML sanitization. | Handles block elements (<p>, <div>, <br>) during conversion. |
+| | `TestEmailProcessor_CleanHTML_EdgeCases` | Logic: Special HTML entities. | Handles unusual or empty HTML content. |
+| | `TestEmailProcessor_CleanHTML_Malformed` | Logic: Malformed HTML recovery. | Safely cleans unclosed or invalid HTML tags. |
 | | `TestEmailProcessor_CleanHTML_NestedAndStyles` | Logic: Complex HTML layout. | Verified script/style exclusion and nested list handling. |
 | | `TestEmailProcessor_ProcessBody` | Conversion: HTML to Text/PDF logic. | Returns clean text or calls Chromium for PDF based on `ConvertBody` setting. |
+| | `TestEmailProcessor_ProcessBody_ContextCancelled` | Robustness: ProcessBody cancellation. | Returns context error if context is cancelled before body processing. |
 | | `TestEmailProcessor_Initialize_Errors` | Logic: Browser setup failure. | Handles non-existent Chromium paths and empty paths correctly. |
 | | `TestEmailProcessor_ConvertToPDF` | Performance: PDF generation. | Verifies high-fidelity rendering using local browser or pre-launched Chrome daemon. |
 | | `TestEmailProcessor_ConvertToPDF_ComplexLayout` | Rendering: Complex CSS/UTF-8 PDF. | Renders Flexbox, inline SVG graphics, UTF-8 Unicode (Japanese, Arabic, Emojis), and tables. |
@@ -221,17 +251,29 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 | | `TestRunMessageDetailsMode_TabwriterError` | Robustness: Writing warning branch. | Verified error handling when stdout/tabwriter fails. |
 | | `TestRunMessageDetailsMode_ContextCancelled` | Robustness: Streaming interruption. | Verifies that details streaming stops on context cancellation. |
 | **Downloader** | `TestDownloader_New` | Logic: Downloader constructor validation. | Rejects nil configuration and populates defaults. |
+| | `TestDownloader_Execute_ValidationFailure` | Validation: Config validation on execute. | Returns error if downloader configuration validation fails. |
+| | `TestDownloader_IsValidEmail` | Safety: Email validation helper. | Verifies email address regex matching. |
+| | `TestDownloader_LoadAccessToken` | Security: Access token resolution. | Resolves static tokens from string, file, or environment variables. |
 | | `TestLoadAccessToken_SecretProtector` | Security: Zero-Trust encrypted token decryption. | Decrypts AES-256-GCM encrypted token files and env vars (`JWT_TOKEN`); rejects unencrypted stored tokens. |
 | | `TestLoadAccessToken_MasterKeyFile` | Security: Master Key File resolution (`-secret-master-key-file`). | Resolves 32-byte master key from file; enforces `0400`/`0600` permissions on Linux and non-temp paths on Windows. |
+| | `TestClientCredentialsAuthenticationProvider_TokenLifecycle` | Auth: OAuth2 Client Credentials & Token Lifecycle. | Verifies initial token acquisition, expiration detection, and transparent auto-refresh via Entra ID. |
+| | `TestDownloader_ResolveAuthProvider_ClientCredentials` | Auth: Provider Resolution. | Resolves plaintext and `secretprotector`-encrypted client secrets to `ClientCredentialsAuthenticationProvider`. |
 | | `TestDownloader_ValidateFinalConfig` | Validation: Cross-field parameter checking. | Ensures mailbox format and workspace paths meet engine criteria. |
+| **Main (CLI)** | `TestCheckLongPathSupportMock` | OS Compatibility: Windows long path check. | Mocks long path registry query on Windows. |
+| | `TestIsValidEmail` | CLI: Flag email validation. | Validates command line email flag values. |
+| | `TestOverrideConfigWithFlags` | CLI: Command line flag override. | Overrides config file settings with explicit CLI flags. |
+| | `TestRun` | CLI: End-to-end execution. | Exercises main execution loop. |
+| | `TestRun_TokenFileRemoval` | CLI: Temp token cleanup. | Verifies temporary token file removal on exit. |
+| | `TestValidateFinalConfig` | CLI: Final config validation. | Validates final merged configuration parameters. |
 | **AppErrors** | `TestAPIError_Error` | Logic: Error string formatting. | Formats status code and message cleanly. |
 | | `TestFileSystemError_Error` | Logic: Path & OS error wrapping. | Formats path context and unwraps inner OS error. |
 | | `TestErrMissingDeltaLink` | Logic: Sentinel error assertion. | Returns expected missing delta link message string. |
 | | `TestGetExitCode` | Diagnostics: Granular exit code mapping. | Classifies errors into `ExitSuccess` (0), `ExitConfigError` (2), `ExitAuthError` (10), `ExitAPIError` (20), `ExitFileSystemError` (30). |
 | **Utils** | `TestStringValue` | Safety: Nil-safe string deref. | Returns fallback value instead of panicking on nil pointers. |
-| | `TimeValue` | Safety: Nil-safe time deref. | Returns fallback time instead of panicking on nil pointers. |
-| | `BoolValue` | Safety: Nil-safe bool deref. | Returns fallback bool instead of panicking on nil pointers. |
-| | `Int32Value` | Safety: Nil-safe int32 deref. | Returns fallback int32 instead of panicking on nil pointers. |
+| | `TestTimeValue` | Safety: Nil-safe time deref. | Returns fallback time instead of panicking on nil pointers. |
+| | `TestBoolValue` | Safety: Nil-safe bool deref. | Returns fallback bool instead of panicking on nil pointers. |
+| | `TestInt32Value` | Safety: Nil-safe int32 deref. | Returns fallback int32 instead of panicking on nil pointers. |
+| | `TestSanitizeControlCharacters` | Safety: Control character stripping. | Strips ASCII control characters from strings. |
 
 ---
 
@@ -257,6 +299,7 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 | `TestResilience_InterruptedSyncResumeRecovery` | State Recovery: Interrupted sync resume. | Saves state file mid-sync and resumes cleanly on second run. |
 | `TestResilience_ContinuousIncrementalPolling` | Daemon Resilience: Continuous poller. | Executes 15 continuous polling iterations under proxy chaos with atomic state chaining. |
 | `TestResilience_SecretProtectorEncryptedToken` | End-to-End Security: Encrypted token execution. | Decrypts AES-256-GCM token file via master key file and completes pipeline under proxy chaos. |
+| `TestResilience_ClientCredentialsTokenLifecycle` | Auth Resilience: Full token lifecycle (acquisition + refresh). | Verifies initial token acquisition, expiration handling, and auto-refresh during live API calls. |
 | `TestResilience_MessageDetailsMode` | Diagnostic: Streaming message details mode. | Streams folder message details (`-message-details`) under proxy. |
 | `TestResilience_BandwidthLimiter` | Transport: Bandwidth rate limiting. | Limits download rate to 0.5 MB/s without context deadlines timing out. |
 | `TestResilience_PerMessageTimeout` | Execution: Per-message timeout. | Limits execution to `-max-execution-time-msg` 1s without hanging. |

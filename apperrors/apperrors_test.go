@@ -1,7 +1,16 @@
 // Package apperrors defines custom error types for structured error handling
 // throughout the application.
 //
-// This file contains unit tests for the apperrors package.
+// OBJECTIVE:
+// Provide unit tests for APIError formatting, FileSystemError unwrapping, sentinel errors, and exit code classification.
+//
+// CORE COMPONENTS:
+// 1. TestAPIError_Error: Tests API error string generation.
+// 2. TestFileSystemError_Error: Tests FileSystemError wrapping and errors.Unwrap.
+// 3. TestGetExitCode: Tests exit code mapping for auth, API, config, filesystem, and generic errors.
+//
+// TEST STRATEGY:
+// Uses testify assertion helpers to verify error message formatting, unwrap functionality, and exit code classification.
 package apperrors
 
 import (

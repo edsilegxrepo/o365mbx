@@ -1,7 +1,19 @@
 // Package engine implements the core business logic and orchestrates the parallelized
 // email download and processing pipeline.
 //
-// This file contains unit tests for the primary engine orchestration logic.
+// OBJECTIVE:
+// Provide comprehensive unit testing for engine initialization, pipeline orchestration, aggregator routing,
+// workspace security validation, state persistence, error propagation, and stat tracking across all processing modes.
+//
+// CORE COMPONENTS:
+// 1. TestRunEngine_*: Verifies pipeline setup, mode dispatch (full, incremental, route), attachment handling, and error branches.
+// 2. TestValidateWorkspacePath_*: Verifies workspace path safety, symlink rejection, and filesystem error handling.
+// 3. TestRunDownloadMode_*: Tests producer-consumer worker pools, queuing timeouts, and state persistence.
+// 4. TestRunAggregator_*: Tests aggregator message routing, error logging, and destination folder moves.
+//
+// TEST STRATEGY:
+// Employs gomock auto-generated mocks for O365Client, FileHandler, and EmailProcessor to simulate Graph API responses,
+// filesystem errors, attachment extractions, and context cancellations deterministically.
 package engine
 
 import (
@@ -15,9 +27,9 @@ import (
 	"testing"
 	"time"
 
-	"o365mbx/filehandler"
-	"o365mbx/mocks"
-	"o365mbx/o365client"
+	"criticalsys.net/o365mbx/filehandler"
+	"criticalsys.net/o365mbx/mocks"
+	"criticalsys.net/o365mbx/o365client"
 
 	"github.com/microsoftgraph/msgraph-sdk-go/models"
 	"github.com/stretchr/testify/assert"
@@ -75,7 +87,7 @@ func TestRunEngine_Basic(t *testing.T) {
 	mockProcessor.EXPECT().IsHTML(gomock.Any()).Return(false).AnyTimes()
 	mockProcessor.EXPECT().ProcessBody(gomock.Any(), gomock.Any(), "none").Return("Hello World", nil)
 	mockHandler.EXPECT().SaveMessage(gomock.Any(), "Hello World", "none").Return(filepath.Join(tmpDir, "msg-1"), nil)
-	mockHandler.EXPECT().SaveStatusReport("user@example.com", gomock.Any(), 0, 0).Return(nil)
+	mockHandler.EXPECT().SaveStatusReport("user@example.com", gomock.Any(), 1, 0).Return(nil)
 
 	err := RunEngine(ctx, cfg, mockClient, mockProcessor, mockHandler, "1.0.0")
 	assert.NoError(t, err)
@@ -241,7 +253,7 @@ func TestRunEngine_SaveMessageError(t *testing.T) {
 	mockProcessor.EXPECT().IsHTML(gomock.Any()).Return(false).AnyTimes()
 	mockProcessor.EXPECT().ProcessBody(gomock.Any(), gomock.Any(), gomock.Any()).Return("body", nil)
 	mockHandler.EXPECT().SaveMessage(gomock.Any(), gomock.Any(), gomock.Any()).Return("", os.ErrPermission)
-	mockHandler.EXPECT().SaveStatusReport("user@example.com", gomock.Any(), 0, 0).Return(nil)
+	mockHandler.EXPECT().SaveStatusReport("user@example.com", gomock.Any(), 0, 1).Return(nil)
 
 	err := RunEngine(context.Background(), cfg, mockClient, mockProcessor, mockHandler, "1.0.0")
 	assert.NoError(t, err)
@@ -302,7 +314,7 @@ func TestRunEngine_WithAttachments(t *testing.T) {
 
 	mockHandler.EXPECT().SaveAttachmentFromBytes(gomock.Any(), gomock.Any(), "msg-att", gomock.Any(), gomock.Any(), gomock.Any()).Return([]filehandler.AttachmentMetadata{}, nil)
 	mockHandler.EXPECT().WriteAttachmentsToMetadata(gomock.Any(), gomock.Any()).Return(nil)
-	mockHandler.EXPECT().SaveStatusReport("user@example.com", gomock.Any(), 0, 0).Return(nil)
+	mockHandler.EXPECT().SaveStatusReport("user@example.com", gomock.Any(), 1, 0).Return(nil)
 
 	err := RunEngine(context.Background(), cfg, mockClient, mockProcessor, mockHandler, "1.0.0")
 	assert.NoError(t, err)

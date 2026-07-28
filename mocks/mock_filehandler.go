@@ -11,8 +11,8 @@ package mocks
 
 import (
 	context "context"
-	filehandler "o365mbx/filehandler"
-	o365client "o365mbx/o365client"
+	filehandler "criticalsys.net/o365mbx/filehandler"
+	o365client "criticalsys.net/o365mbx/o365client"
 	reflect "reflect"
 
 	models "github.com/microsoftgraph/msgraph-sdk-go/models"

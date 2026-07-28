@@ -2,14 +2,21 @@
 // such as safe pointer dereferencing.
 //
 // OBJECTIVE:
-// This package contains stateless, reusable helper functions that simplify
-// common operations used across multiple packages in the application.
+// Provide stateless, panic-safe pointer dereferencing and string sanitization helpers.
+//
+// CORE COMPONENTS:
+// 1. StringValue, TimeValue, BoolValue, Int32Value: Nil-safe pointer dereferencers with fallback values.
+// 2. SanitizeControlCharacters: ASCII control character stripper for clean terminal/JSON display.
 //
 // CORE FUNCTIONALITY:
 //  1. Safe Dereferencing: Provides "Value" helpers (StringValue, TimeValue, etc.)
 //     that safely dereference pointers and return a default value if the pointer is nil.
 //     This is particularly useful when working with the Microsoft Graph SDK's model
 //     where almost all fields are pointers.
+//  2. Control Character Sanitization: Strips non-printable ASCII characters (\x00-\x1F, \x7F) from strings.
+//
+// DATA FLOW:
+// Optional Pointer (*T) / Raw String -> Value Inspection -> Safe Value (T) / Sanitized String.
 package utils
 
 import (

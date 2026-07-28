@@ -45,7 +45,7 @@ flowchart TD
 
 ### Code Example: Embedding in External Services (`service-gateway`)
 
-External Go applications can invoke mailbox downloads in **three lines of code** using the `downloader.Run` function, or gain granular control using `downloader.New`:
+External Go applications can invoke mailbox downloads using `downloader.Run` or gain granular control using `downloader.New`. Both static tokens and **Client Credentials Flow with automatic token refresh** are supported:
 
 ```go
 package main
@@ -59,11 +59,13 @@ import (
 	"o365mbx/engine"
 )
 
-func SyncMailbox(ctx context.Context, mailboxEmail, targetWorkspace, jwtToken string) error {
+func SyncMailbox(ctx context.Context, mailboxEmail, targetWorkspace, tenantID, clientID, clientSecret string) error {
 	cfg := &engine.Config{
 		MailboxName:          mailboxEmail,
 		WorkspacePath:        targetWorkspace,
-		TokenString:          jwtToken,
+		TenantID:             tenantID,
+		ClientID:             clientID,
+		ClientSecret:         clientSecret, // Auto-refreshed via Entra ID OAuth2 endpoint
 		ProcessingMode:       "full",
 		ConvertBody:          "pdf",
 		ChromiumPath:         "ws://127.0.0.1:9222", // Shared Chrome daemon

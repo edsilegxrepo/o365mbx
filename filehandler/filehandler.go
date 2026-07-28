@@ -2,10 +2,13 @@
 // workspace creation, message saving, attachment handling, and state persistence.
 //
 // OBJECTIVE:
-// This package is responsible for the "L" (Load/Store) in the ETL pipeline. It ensures
-// that all downloaded data (metadata, bodies, and attachments) is stored safely and
-// consistently on the local filesystem, adhering to security best practices and
-// OS-specific constraints like path length limits.
+// Responsible for local filesystem storage, directory structure management, attachment extraction, and state persistence.
+//
+// CORE COMPONENTS:
+// 1. FileHandler: Primary file management implementation utilizing os.OpenRoot for safe handle operations.
+// 2. SaveMessage: Serializes email metadata.json and body (.txt/.html/.pdf) into structured directories.
+// 3. SaveFileAttachment & SaveItemAttachment: Handles standard file attachments, large streaming attachments, and nested MIME envelopes.
+// 4. SaveStatusReport & SaveState: Manages atomic status summaries and incremental sync state JSON persistence.
 //
 // CORE FUNCTIONALITY:
 //  1. Workspace Management: Creates and validates the root directory for all job artifacts.
@@ -16,6 +19,9 @@
 //     reports for job reconciliation.
 //  5. Concurrency Control: Uses file-level mutexes and bandwidth limiters to ensure
 //     thread-safe operations and respect environment constraints.
+//
+// DATA FLOW:
+// Message / Attachment Stream -> OpenRoot Handle -> File Write / enmime MIME Extraction -> Atomic Temp Rename -> Persistent Artifact.
 //
 // SECURITY MEASURES:
 // - Absolute Path Enforcement: Rejects relative paths for workspace.
@@ -40,10 +46,10 @@ import (
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/time/rate"
 
-	"o365mbx/apperrors"
-	"o365mbx/emailprocessor"
-	"o365mbx/o365client"
-	"o365mbx/utils"
+	"criticalsys.net/o365mbx/apperrors"
+	"criticalsys.net/o365mbx/emailprocessor"
+	"criticalsys.net/o365mbx/o365client"
+	"criticalsys.net/o365mbx/utils"
 )
 
 const maxPathLength = 512 // A safe limit for total path length to avoid filesystem errors.
@@ -565,6 +571,7 @@ func (fh *FileHandler) WriteAttachmentsToMetadata(msgPath string, attachments []
 	}
 
 	metadata.Attachments = attachments
+	metadata.AttachmentCount = len(attachments)
 
 	metadataJSON, err := json.MarshalIndent(metadata, "", "  ")
 	if err != nil {
@@ -706,6 +713,10 @@ func (fh *FileHandler) SaveStatusReport(mailboxName string, sourceCounts map[str
 	now := time.Now().UTC()
 	timestamp := now.Format(time.RFC3339)
 	fileTimestamp := now.Format("20060102_150405")
+
+	if sourceCounts == nil {
+		sourceCounts = make(map[string]int32)
+	}
 
 	status := JobStatus{
 		Mailbox:           mailboxName,

@@ -2,13 +2,20 @@
 // email download and processing pipeline.
 //
 // OBJECTIVE:
-// This package defines the application's configuration schema, defaults, and validation
-// rules. It ensures that the engine operates within safe and predictable parameters.
+// Defines the application's configuration schema, default value injection, and runtime validation rules.
 //
-// CORE SECTIONS:
+// CORE COMPONENTS:
+// 1. Config: Central configuration struct containing connection, authentication, performance, and formatting parameters.
+// 2. SetDefaults: Injects safe baseline values for unconfigured parameters.
+// 3. Validate: Enforces strict boundary rules for parameters, paths, and modes.
+//
+// CORE SECTIONS & FUNCTIONALITY:
 // 1. Config Structure: Maps JSON configuration and CLI flags to internal application settings.
 // 2. Default Values: Provides sensible defaults for optional settings.
 // 3. Validation Logic: Enforces constraints on settings like paths, counts, and intervals.
+//
+// DATA FLOW:
+// JSON Config File / CLI Flags -> LoadConfig -> SetDefaults -> Validate -> Validated Engine Config.
 package engine
 
 import (
@@ -31,6 +38,13 @@ type Config struct {
 	SecretMasterKey     string `json:"secretMasterKey,omitempty"`
 	SecretMasterKeyEnv  string `json:"secretMasterKeyEnv,omitempty"`
 	SecretMasterKeyFile string `json:"secretMasterKeyFile,omitempty"`
+
+	// Client Credentials settings
+	TenantID         string `json:"tenantID,omitempty"`
+	ClientID         string `json:"clientID,omitempty"`
+	ClientSecret     string `json:"clientSecret,omitempty"`
+	ClientSecretFile string `json:"clientSecretFile,omitempty"`
+	ClientSecretEnv  bool   `json:"clientSecretEnv,omitempty"`
 
 	// General settings
 	DebugLogging         bool   `json:"debugLogging,omitempty"`
@@ -200,6 +214,28 @@ func (c *Config) Validate() error {
 		// This check is basic and might not be sufficient for all environments (e.g., Windows).
 		if info.Mode()&0o111 == 0 {
 			return fmt.Errorf("chromiumPath '%s' is not executable", c.ChromiumPath)
+		}
+	}
+
+	if c.TenantID != "" {
+		if c.ClientID == "" {
+			return fmt.Errorf("clientID is required when tenantID is provided")
+		}
+		secretSources := 0
+		if c.ClientSecret != "" {
+			secretSources++
+		}
+		if c.ClientSecretFile != "" {
+			secretSources++
+		}
+		if c.ClientSecretEnv {
+			secretSources++
+		}
+		if secretSources == 0 {
+			return fmt.Errorf("no client secret source specified. Please use one of ClientSecret, ClientSecretFile, or ClientSecretEnv")
+		}
+		if secretSources > 1 {
+			return fmt.Errorf("multiple client secret sources specified. Please use only one of ClientSecret, ClientSecretFile, or ClientSecretEnv")
 		}
 	}
 

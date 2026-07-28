@@ -1,7 +1,18 @@
 // Package o365client handles all interactions with the Microsoft Graph API,
 // including message retrieval, attachment streaming, and mailbox management.
 //
-// This file contains unit tests for the o365client package using httpmock.
+// OBJECTIVE:
+// Provide comprehensive unit testing for O365Client methods using httpmock to simulate OData API responses.
+//
+// CORE COMPONENTS:
+// 1. TestO365Client_GetMessages_*: Tests delta queries, pagination nextLinks, and error branches.
+// 2. TestO365Client_GetAttachmentRawStream_*: Tests raw binary `$value` stream retrieval, error status mapping, and transport failures.
+// 3. TestO365Client_GetMailboxHealthCheck_* & GetMailboxStats_*: Tests folder count aggregation and mailbox health checks.
+// 4. TestO365Client_ParseFolderSize & HandleError_*: Tests Kiota UntypedNode normalization and apperrors classification.
+//
+// TEST STRATEGY:
+// Utilizes `httpmock` to register mock HTTP responders for Graph API endpoints (`/messages`, `/attachments/$value`, `/mailFolders`),
+// validating payload parsing and error handling without external network dependencies.
 package o365client
 
 import (
@@ -14,6 +25,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jarcoal/httpmock"
 	kiota "github.com/microsoft/kiota-abstractions-go"
@@ -23,7 +35,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"o365mbx/apperrors"
+	"criticalsys.net/o365mbx/apperrors"
 )
 
 func TestO365Client_GetMessages_httpmock(t *testing.T) {
@@ -444,6 +456,119 @@ func TestStaticTokenAuthenticationProvider(t *testing.T) {
 
 	_, err = NewStaticTokenAuthenticationProvider("")
 	assert.Error(t, err)
+}
+
+func TestClientCredentialsAuthenticationProvider(t *testing.T) {
+	// Validation tests
+	_, err := NewClientCredentialsAuthenticationProvider("", "client", "secret")
+	assert.Error(t, err)
+	_, err = NewClientCredentialsAuthenticationProvider("tenant", "", "secret")
+	assert.Error(t, err)
+	_, err = NewClientCredentialsAuthenticationProvider("tenant", "client", "")
+	assert.Error(t, err)
+
+	provider, err := NewClientCredentialsAuthenticationProvider("tenant-123", "client-456", "secret-789")
+	assert.NoError(t, err)
+	assert.NotNil(t, provider)
+
+	httpmock.Activate()
+	defer httpmock.DeactivateAndReset()
+
+	mockClient := &http.Client{}
+	httpmock.ActivateNonDefault(mockClient)
+	provider.SetHTTPClient(mockClient)
+
+	httpmock.RegisterResponder("POST", "https://login.microsoftonline.com/tenant-123/oauth2/v2.0/token",
+		httpmock.NewStringResponder(200, `{"access_token": "mock-client-credentials-jwt-token", "expires_in": 3600, "token_type": "Bearer"}`))
+
+	token, err := provider.GetToken(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "mock-client-credentials-jwt-token", token)
+
+	// Test caching - second call should hit cache without additional HTTP call
+	token2, err := provider.GetToken(context.Background())
+	assert.NoError(t, err)
+	assert.Equal(t, "mock-client-credentials-jwt-token", token2)
+	assert.Equal(t, 1, httpmock.GetTotalCallCount())
+}
+
+func TestClientCredentialsAuthenticationProvider_TokenLifecycle(t *testing.T) {
+	provider, err := NewClientCredentialsAuthenticationProvider("tenant-lifecycle", "client-lifecycle", "secret-lifecycle")
+	assert.NoError(t, err)
+
+	httpmock.Activate()
+	defer httpmock.DeactivateAndReset()
+
+	mockClient := &http.Client{}
+	httpmock.ActivateNonDefault(mockClient)
+	provider.SetHTTPClient(mockClient)
+
+	// Step 1: Initial token acquisition (short expiration of 1 second for test fast-forward)
+	callCount := 0
+	httpmock.RegisterResponder("POST", "https://login.microsoftonline.com/tenant-lifecycle/oauth2/v2.0/token",
+		func(req *http.Request) (*http.Response, error) {
+			callCount++
+			if callCount == 1 {
+				return httpmock.NewStringResponse(200, `{"access_token": "token-initial-v1", "expires_in": 1, "token_type": "Bearer"}`), nil
+			}
+			return httpmock.NewStringResponse(200, `{"access_token": "token-refreshed-v2", "expires_in": 3600, "token_type": "Bearer"}`), nil
+		})
+
+	ctx := context.Background()
+
+	// 1. Initial Acquisition
+	token1, err := provider.GetToken(ctx)
+	assert.NoError(t, err)
+	assert.Equal(t, "token-initial-v1", token1)
+	assert.Equal(t, 1, callCount)
+
+	// 2. Fast-forward expiration by directly setting expiresAt in past
+	provider.mu.Lock()
+	provider.expiresAt = time.Now().Add(-10 * time.Second)
+	provider.mu.Unlock()
+
+	// 3. Transparent Token Refresh on subsequent call
+	reqInfo := kiota.NewRequestInformation()
+	err = provider.AuthenticateRequest(ctx, reqInfo, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, 2, callCount)
+	assert.Contains(t, reqInfo.Headers.Get("Authorization"), "Bearer token-refreshed-v2")
+
+	// 4. Verify GetAuthorizationToken returns refreshed token
+	tok, err := provider.GetAuthorizationToken(ctx, nil, nil)
+	assert.NoError(t, err)
+	assert.Equal(t, "token-refreshed-v2", tok)
+}
+
+func TestClientCredentialsAuthenticationProvider_ErrorBranches(t *testing.T) {
+	provider, err := NewClientCredentialsAuthenticationProvider("tenant-err", "client-err", "secret-err")
+	require.NoError(t, err)
+
+	provider.SetTokenEndpoint("https://custom.endpoint/token")
+
+	httpmock.Activate()
+	defer httpmock.DeactivateAndReset()
+
+	mockClient := &http.Client{}
+	httpmock.ActivateNonDefault(mockClient)
+	provider.SetHTTPClient(mockClient)
+
+	// 1. HTTP 400 response from token endpoint
+	httpmock.RegisterResponder("POST", "https://custom.endpoint/token",
+		httpmock.NewStringResponder(400, `{"error": "unauthorized_client", "error_description": "invalid client secret"}`))
+
+	_, err = provider.GetToken(context.Background())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "HTTP 400")
+
+	// 2. HTTP 200 response missing access_token
+	httpmock.Reset()
+	httpmock.RegisterResponder("POST", "https://custom.endpoint/token",
+		httpmock.NewStringResponder(200, `{"token_type": "Bearer"}`))
+
+	_, err = provider.GetToken(context.Background())
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "missing access_token")
 }
 
 func TestO365Client_GetMessages_Pagination_httpmock(t *testing.T) {
