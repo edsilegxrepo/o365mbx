@@ -38,11 +38,40 @@
               "subject": "Chaos Simulation Test"
             },
             {
-              "id": "msg-nested",
+              "id": "msg-deleted-01",
+              "@removed": {
+                "reason": "deleted"
+              }
+            },
+            {
+              "id": "msg-html-rich",
               "from": {
                 "emailAddress": {
-                  "address": "sender@test.com",
-                  "name": "Sender"
+                  "address": "newsletter@test.com",
+                  "name": "Rich Newsletter"
+                }
+              },
+              "toRecipients": [
+                {
+                  "emailAddress": {
+                    "address": "MeganB@M365x214355.onmicrosoft.com"
+                  }
+                }
+              ],
+              "hasAttachments": false,
+              "receivedDateTime": "2024-03-13T10:00:00Z",
+              "body": {
+                "content": "<html><body><h1>Special Offer &amp; Invoice</h1><p>Hello <b>Megan</b>,<br>Thank you for your order!</p><img src=\"cid:image001.png@01D9A5B.12345\" alt=\"Logo\"><style>body{color:red;}</style></body></html>",
+                "contentType": "html"
+              },
+              "subject": "Rich HTML Email with Entities & CID Images"
+            },
+            {
+              "id": "msg-filename-collisions",
+              "from": {
+                "emailAddress": {
+                  "address": "billing@vendor.com",
+                  "name": "Vendor Billing"
                 }
               },
               "toRecipients": [
@@ -55,17 +84,127 @@
               "hasAttachments": true,
               "receivedDateTime": "2024-03-13T10:00:00Z",
               "body": {
-                "content": "<html><body>Testing nested recursion.</body></html>",
+                "content": "Multiple attachments with identical names.",
+                "contentType": "text"
+              },
+              "subject": "Filename Collision Test"
+            },
+            {
+              "id": "msg-inline-cid",
+              "from": {
+                "emailAddress": {
+                  "address": "support@vendor.com",
+                  "name": "Vendor Support"
+                }
+              },
+              "toRecipients": [
+                {
+                  "emailAddress": {
+                    "address": "MeganB@M365x214355.onmicrosoft.com"
+                  }
+                }
+              ],
+              "hasAttachments": true,
+              "receivedDateTime": "2024-03-13T10:00:00Z",
+              "body": {
+                "content": "<html><body>Inline image test <img src=\"cid:logo.png\"></body></html>",
                 "contentType": "html"
               },
-              "subject": "Level 1 Recursion Test"
+              "subject": "Inline CID Attachment Test"
+            },
+            {
+              "id": "msg-null-subject",
+              "from": {
+                "emailAddress": {
+                  "address": "ACCOUNTSPAYABLE@MODERNATX.COM",
+                  "name": "Moderna Accounts Payable"
+                }
+              },
+              "toRecipients": [
+                {
+                  "emailAddress": {
+                    "address": "MeganB@M365x214355.onmicrosoft.com"
+                  }
+                }
+              ],
+              "hasAttachments": false,
+              "receivedDateTime": "2024-03-13T10:00:00Z",
+              "body": {
+                "content": "Moderna invoice email with no subject line.",
+                "contentType": "text"
+              },
+              "subject": null
+            },
+            {
+              "id": "msg-null-sender",
+              "from": null,
+              "toRecipients": [
+                {
+                  "emailAddress": {
+                    "address": "MeganB@M365x214355.onmicrosoft.com"
+                  }
+                }
+              ],
+              "hasAttachments": false,
+              "receivedDateTime": "2024-03-13T10:00:00Z",
+              "body": {
+                "content": "System bounce message without sender",
+                "contentType": "text"
+              },
+              "subject": "Undeliverable: Test"
+            },
+            {
+              "id": "msg-unnamed-attachment",
+              "from": {
+                "emailAddress": {
+                  "address": "AP@Arthrex.com",
+                  "name": "Arthrex AP"
+                }
+              },
+              "toRecipients": [
+                {
+                  "emailAddress": {
+                    "address": "MeganB@M365x214355.onmicrosoft.com"
+                  }
+                }
+              ],
+              "hasAttachments": true,
+              "receivedDateTime": "2024-03-13T10:00:00Z",
+              "body": {
+                "content": "Message with unnamed attachment",
+                "contentType": "text"
+              },
+              "subject": "Unnamed Attachment Test"
+            },
+            {
+              "id": "msg-nested",
+              "from": {
+                "emailAddress": {
+                  "address": "AP@Arthrex.com",
+                  "name": "Arthrex AP"
+                }
+              },
+              "toRecipients": [
+                {
+                  "emailAddress": {
+                    "address": "MeganB@M365x214355.onmicrosoft.com"
+                  }
+                }
+              ],
+              "hasAttachments": true,
+              "receivedDateTime": "2024-03-13T10:00:00Z",
+              "body": {
+                "content": "<html><body>Testing nested .msg recursion.</body></html>",
+                "contentType": "html"
+              },
+              "subject": "Level 1 Recursion Test (.msg ItemAttachment)"
             },
             {
               "id": "msg-massive",
               "from": {
                 "emailAddress": {
-                  "address": "io@stress.com",
-                  "name": "IO Stress"
+                  "address": "mmsar@mckesson.com",
+                  "name": "McKesson MMSAR"
                 }
               },
               "toRecipients": [
@@ -2002,7 +2141,7 @@
             "name": "Content-Type"
           }
         ],
-        "body": "@f:\\temp\\o365mbx_UTESTS\\nested_recursion.eml",
+        "body": "@fixtures/nested_recursion.eml",
         "statusCode": 200
       }
     },
@@ -2018,7 +2157,7 @@
             "name": "Content-Type"
           }
         ],
-        "body": "@f:\\temp\\o365mbx_UTESTS\\complex_nested.eml",
+        "body": "@fixtures/complex_nested.eml",
         "statusCode": 200
       }
     },
@@ -2034,7 +2173,7 @@
             "name": "Content-Type"
           }
         ],
-        "body": "@f:\\temp\\o365mbx_UTESTS\\recursive_1.eml",
+        "body": "@fixtures/recursive_1.eml",
         "statusCode": 200
       }
     },
@@ -2070,6 +2209,202 @@
           "id": "48d31887-5fad-4d73-a9f5-3c356e68a038",
           "displayName": "Megan Bowen",
           "userPrincipalName": "MeganB@M365x214355.onmicrosoft.com"
+        },
+        "statusCode": 200
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://graph.microsoft.com/v1.0/users/*/mailFolders*"
+      },
+      "response": {
+        "headers": [
+          {
+            "value": "application/json; odata.metadata=minimal",
+            "name": "Content-Type"
+          }
+        ],
+        "body": {
+          "value": [
+            {
+              "id": "folder-inbox-id",
+              "displayName": "Inbox",
+              "totalItemCount": 1573,
+              "sizeInBytes": 262930432
+            },
+            {
+              "id": "folder-archive-id",
+              "displayName": "Archive",
+              "totalItemCount": 50,
+              "sizeInBytes": 104857600
+            },
+            {
+              "id": "folder-sent-id",
+              "displayName": "Sent Items",
+              "totalItemCount": 15,
+              "sizeInBytes": 1048576
+            }
+          ]
+        },
+        "statusCode": 200
+      }
+    },
+    {
+      "request": {
+        "method": "POST",
+        "url": "https://graph.microsoft.com/v1.0/users/*/messages/*/move*"
+      },
+      "response": {
+        "headers": [
+          {
+            "value": "application/json",
+            "name": "Content-Type"
+          }
+        ],
+        "body": {
+          "id": "moved-msg-id"
+        },
+        "statusCode": 201
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://graph.microsoft.com/v1.0/users/*/messages/msg-unnamed-attachment/attachments"
+      },
+      "response": {
+        "headers": [
+          {
+            "value": "application/json",
+            "name": "Content-Type"
+          }
+        ],
+        "body": {
+          "value": [
+            {
+              "id": "att-unnamed-id",
+              "contentType": "application/octet-stream",
+              "size": 1024,
+              "name": null,
+              "contentBytes": "SGVsbG8gV29ybGQ=",
+              "@odata.type": "#microsoft.graph.fileAttachment"
+            }
+          ]
+        },
+        "statusCode": 200
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://graph.microsoft.com/v1.0/users/*/mailFolders/*/messages*"
+      },
+      "response": {
+        "headers": [
+          {
+            "value": "application/json; odata.metadata=minimal",
+            "name": "Content-Type"
+          }
+        ],
+        "body": {
+          "value": [
+            {
+              "id": "msg-healthcheck-inbox",
+              "from": {
+                "emailAddress": {
+                  "address": "sender@test.com",
+                  "name": "Sender"
+                }
+              },
+              "toRecipients": [
+                {
+                  "emailAddress": {
+                    "address": "MeganB@M365x214355.onmicrosoft.com"
+                  }
+                }
+              ],
+              "hasAttachments": false,
+              "receivedDateTime": "2024-03-13T10:00:00Z",
+              "body": {
+                "content": "Latest message in folder",
+                "contentType": "text"
+              },
+              "subject": "Inbox Last Message Date Baseline"
+            }
+          ]
+        },
+        "statusCode": 200
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://graph.microsoft.com/v1.0/users/*/messages/msg-filename-collisions/attachments"
+      },
+      "response": {
+        "headers": [
+          {
+            "value": "application/json",
+            "name": "Content-Type"
+          }
+        ],
+        "body": {
+          "value": [
+            {
+              "id": "att-coll-1",
+              "contentType": "application/pdf",
+              "size": 2048,
+              "name": "invoice.pdf",
+              "contentBytes": "SGVsbG8gV29ybGQ=",
+              "@odata.type": "#microsoft.graph.fileAttachment"
+            },
+            {
+              "id": "att-coll-2",
+              "contentType": "application/pdf",
+              "size": 4096,
+              "name": "invoice.pdf",
+              "contentBytes": "SGVsbG8gV29ybGQ=",
+              "@odata.type": "#microsoft.graph.fileAttachment"
+            },
+            {
+              "id": "att-coll-3",
+              "contentType": "application/pdf",
+              "size": 8192,
+              "name": "invoice.pdf",
+              "contentBytes": "SGVsbG8gV29ybGQ=",
+              "@odata.type": "#microsoft.graph.fileAttachment"
+            }
+          ]
+        },
+        "statusCode": 200
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://graph.microsoft.com/v1.0/users/*/messages/msg-inline-cid/attachments"
+      },
+      "response": {
+        "headers": [
+          {
+            "value": "application/json",
+            "name": "Content-Type"
+          }
+        ],
+        "body": {
+          "value": [
+            {
+              "id": "att-inline-logo",
+              "contentType": "image/png",
+              "size": 512,
+              "name": "logo.png",
+              "isInline": true,
+              "contentId": "logo.png",
+              "contentBytes": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+              "@odata.type": "#microsoft.graph.fileAttachment"
+            }
+          ]
         },
         "statusCode": 200
       }

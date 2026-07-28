@@ -7,6 +7,7 @@ package engine
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -515,13 +516,13 @@ func TestValidateWorkspacePath_Extra(t *testing.T) {
 
 	// Test case: Exists but not a directory
 	filePath := filepath.Join(tmpDir, "file")
-	_ = os.WriteFile(filePath, []byte("test"), 0600)
+	_ = os.WriteFile(filePath, []byte("test"), 0o600)
 	assert.Error(t, validateWorkspacePath(filePath))
 
 	// Test case: Non-empty directory (warning path)
 	nonEmptyDir := filepath.Join(tmpDir, "non-empty")
-	_ = os.Mkdir(nonEmptyDir, 0700)
-	_ = os.WriteFile(filepath.Join(nonEmptyDir, "file"), []byte("test"), 0600)
+	_ = os.Mkdir(nonEmptyDir, 0o700)
+	_ = os.WriteFile(filepath.Join(nonEmptyDir, "file"), []byte("test"), 0o600)
 	assert.NoError(t, validateWorkspacePath(nonEmptyDir))
 }
 
@@ -738,7 +739,7 @@ func TestConfig_Validate_ChromiumPaths(t *testing.T) {
 
 	// 1. ChromiumPath is a directory
 	dirPath := filepath.Join(tmpDir, "some-dir")
-	_ = os.Mkdir(dirPath, 0700)
+	_ = os.Mkdir(dirPath, 0o700)
 	c := &Config{
 		ConvertBody:  "pdf",
 		ChromiumPath: dirPath,
@@ -750,7 +751,7 @@ func TestConfig_Validate_ChromiumPaths(t *testing.T) {
 
 	// 2. ChromiumPath not executable
 	filePath := filepath.Join(tmpDir, "not-exec")
-	_ = os.WriteFile(filePath, []byte("test"), 0600)
+	_ = os.WriteFile(filePath, []byte("test"), 0o600)
 	c.ChromiumPath = filePath
 	err = c.Validate()
 	// On Windows, the executable check might behave differently, but let's see what happens.
@@ -906,13 +907,13 @@ func TestRunDownloadMode_QueuingTimeout(t *testing.T) {
 	)
 
 	mockProcessor.EXPECT().IsHTML(gomock.Any()).Return(false).AnyTimes()
-	mockProcessor.EXPECT().ProcessBody(gomock.Any(), gomock.Any(), gomock.Any()).Return("body", nil)
-	mockHandler.EXPECT().SaveMessage(gomock.Any(), gomock.Any(), gomock.Any()).Return("path", nil)
+	mockProcessor.EXPECT().ProcessBody(gomock.Any(), gomock.Any(), gomock.Any()).Return("body", nil).MaxTimes(1)
+	mockHandler.EXPECT().SaveMessage(gomock.Any(), gomock.Any(), gomock.Any()).Return("path", nil).MaxTimes(1)
 
 	att := models.NewFileAttachment()
 	name := "att.txt"
 	att.SetName(&name)
-	mockClient.EXPECT().GetMessageAttachments(gomock.Any(), gomock.Any(), "msg-timeout").Return([]models.Attachmentable{att, att}, nil)
+	mockClient.EXPECT().GetMessageAttachments(gomock.Any(), gomock.Any(), "msg-timeout").Return([]models.Attachmentable{att, att}, nil).MaxTimes(1)
 
 	// Since we are testing a race between context cancellation and channel queuing,
 	// we allow SaveAttachmentFromBytes to be called zero or more times.
@@ -937,7 +938,7 @@ func TestValidateWorkspacePath_IOErrors(t *testing.T) {
 
 	// 1. info.IsDir() false
 	filePath := filepath.Join(tmpDir, "not-a-dir")
-	_ = os.WriteFile(filePath, []byte("test"), 0600)
+	_ = os.WriteFile(filePath, []byte("test"), 0o600)
 	err := validateWorkspacePath(filePath)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "is not a directory")
@@ -945,7 +946,7 @@ func TestValidateWorkspacePath_IOErrors(t *testing.T) {
 	// 2. os.Open failure
 	// On Windows, we can lock a file to prevent opening it
 	lockDir := filepath.Join(tmpDir, "locked-dir")
-	_ = os.Mkdir(lockDir, 0700)
+	_ = os.Mkdir(lockDir, 0o700)
 	f, _ := os.OpenFile(lockDir, os.O_RDONLY, 0)
 	if f != nil {
 		defer func() {
@@ -1035,7 +1036,133 @@ func TestRunDownloadMode_FinalMetadataError(t *testing.T) {
 
 	// Simulate WriteAttachmentsToMetadata failure
 	mockHandler.EXPECT().WriteAttachmentsToMetadata("path", gomock.Any()).Return(errors.New("meta fail"))
+	mockHandler.EXPECT().SaveError("path", gomock.Any()).Return(nil)
 
 	err := runDownloadMode(context.Background(), cfg, mockClient, mockProcessor, mockHandler, &RunStats{})
 	assert.NoError(t, err)
+}
+
+func TestRunDownloadMode_FullMode_AttachmentContextAndErrorPersistence(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mocks.NewMockO365ClientInterface(ctrl)
+	mockProcessor := mocks.NewMockEmailProcessorInterface(ctrl)
+	mockHandler := mocks.NewMockFileHandlerInterface(ctrl)
+
+	cfg := &Config{
+		MailboxName:          "user@test.com",
+		MaxParallelDownloads: 2,
+		ProcessingMode:       "full",
+	}
+	cfg.SetDefaults()
+
+	mockClient.EXPECT().GetMessages(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, mailbox, folder string, state *o365client.RunState, msgChan chan<- models.Messageable) error {
+			defer close(msgChan)
+			msg := models.NewMessage()
+			id := "msg-full-mode"
+			msg.SetId(&id)
+			hasAtt := true
+			msg.SetHasAttachments(&hasAtt)
+			msgChan <- msg
+			return nil
+		},
+	)
+
+	mockProcessor.EXPECT().IsHTML(gomock.Any()).Return(false).AnyTimes()
+	mockProcessor.EXPECT().ProcessBody(gomock.Any(), gomock.Any(), gomock.Any()).Return("body", nil)
+	mockHandler.EXPECT().SaveMessage(gomock.Any(), gomock.Any(), gomock.Any()).Return("msg-path-full", nil)
+
+	att1 := models.NewFileAttachment()
+	name1 := "att1.pdf"
+	att1.SetName(&name1)
+
+	att2 := models.NewFileAttachment()
+	name2 := "att2.pdf"
+	att2.SetName(&name2)
+
+	mockClient.EXPECT().GetMessageAttachments(gomock.Any(), gomock.Any(), "msg-full-mode").Return([]models.Attachmentable{att1, att2}, nil)
+
+	// Verify that SaveAttachmentFromBytes receives a context that is NOT canceled
+	mockHandler.EXPECT().SaveAttachmentFromBytes(gomock.Any(), "user@test.com", "msg-full-mode", "msg-path-full", gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, mailbox, msgID, msgPath string, att models.Attachmentable, sequence int) ([]filehandler.AttachmentMetadata, error) {
+			assert.NoError(t, ctx.Err(), "Attachment context must NOT be canceled during download in full mode")
+			return []filehandler.AttachmentMetadata{{Name: *att.GetName(), SavedAs: fmt.Sprintf("%02d_%s", sequence, *att.GetName())}}, nil
+		},
+	).Times(2)
+
+	mockHandler.EXPECT().WriteAttachmentsToMetadata("msg-path-full", gomock.Any()).DoAndReturn(
+		func(msgPath string, metas []filehandler.AttachmentMetadata) error {
+			assert.Equal(t, 2, len(metas))
+			return nil
+		},
+	)
+
+	stats := &RunStats{}
+	err := runDownloadMode(context.Background(), cfg, mockClient, mockProcessor, mockHandler, stats)
+	assert.NoError(t, err)
+	assert.Equal(t, uint32(1), stats.MessagesProcessed)
+	assert.Equal(t, uint32(2), stats.AttachmentsProcessed)
+}
+
+func TestRunDownloadMode_IncrementalMode_StateAndErrorPersistence(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mocks.NewMockO365ClientInterface(ctrl)
+	mockProcessor := mocks.NewMockEmailProcessorInterface(ctrl)
+	mockHandler := mocks.NewMockFileHandlerInterface(ctrl)
+
+	cfg := &Config{
+		MailboxName:          "user@test.com",
+		MaxParallelDownloads: 2,
+		ProcessingMode:       "incremental",
+		StateFilePath:        "state.json",
+	}
+	cfg.SetDefaults()
+
+	mockHandler.EXPECT().LoadState("state.json").Return(&o365client.RunState{DeltaLink: "existing-delta"}, nil)
+
+	mockClient.EXPECT().GetMessages(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, mailbox, folder string, state *o365client.RunState, msgChan chan<- models.Messageable) error {
+			defer close(msgChan)
+			msg := models.NewMessage()
+			id := "msg-incr-mode"
+			msg.SetId(&id)
+			hasAtt := true
+			msg.SetHasAttachments(&hasAtt)
+			msgChan <- msg
+			state.DeltaLink = "new-delta"
+			return nil
+		},
+	)
+
+	mockProcessor.EXPECT().IsHTML(gomock.Any()).Return(false).AnyTimes()
+	mockProcessor.EXPECT().ProcessBody(gomock.Any(), gomock.Any(), gomock.Any()).Return("body", nil)
+	mockHandler.EXPECT().SaveMessage(gomock.Any(), gomock.Any(), gomock.Any()).Return("msg-path-incr", nil)
+
+	att := models.NewFileAttachment()
+	name := "failing_att.pdf"
+	att.SetName(&name)
+
+	mockClient.EXPECT().GetMessageAttachments(gomock.Any(), gomock.Any(), "msg-incr-mode").Return([]models.Attachmentable{att}, nil)
+
+	// Simulate SaveAttachmentFromBytes error to verify SaveError is invoked in incremental mode
+	mockHandler.EXPECT().SaveAttachmentFromBytes(gomock.Any(), "user@test.com", "msg-incr-mode", "msg-path-incr", gomock.Any(), gomock.Any()).Return(nil, errors.New("download fail"))
+	mockHandler.EXPECT().SaveError("msg-path-incr", gomock.Any()).DoAndReturn(
+		func(msgPath string, errs []error) error {
+			assert.Equal(t, "msg-path-incr", msgPath)
+			assert.NotEmpty(t, errs)
+			return nil
+		},
+	)
+	mockHandler.EXPECT().WriteAttachmentsToMetadata("msg-path-incr", gomock.Any()).Return(nil)
+	mockHandler.EXPECT().SaveState(gomock.Any(), "state.json").Return(nil)
+
+	stats := &RunStats{}
+	err := runDownloadMode(context.Background(), cfg, mockClient, mockProcessor, mockHandler, stats)
+	assert.NoError(t, err)
+	assert.Equal(t, uint32(1), stats.MessagesProcessed)
+	assert.Equal(t, uint32(1), stats.NonFatalErrors)
 }

@@ -34,3 +34,9 @@ func TestInt32Value(t *testing.T) {
 	assert.Equal(t, int32(42), Int32Value(&i, 0))
 	assert.Equal(t, int32(0), Int32Value(nil, 0))
 }
+
+func TestSanitizeControlCharacters(t *testing.T) {
+	assert.Equal(t, "Hello World", SanitizeControlCharacters("Hello\x00 World"))
+	assert.Equal(t, "Clean Text", SanitizeControlCharacters("\x1b[31mClean Text\x1b[0m"))
+	assert.Equal(t, "Line1\nLine2", SanitizeControlCharacters("Line1\nLine2"))
+}

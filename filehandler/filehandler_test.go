@@ -86,7 +86,7 @@ func TestFileHandler_SaveFileAttachment(t *testing.T) {
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
 	attPath := filepath.Join(msgPath, "attachments")
-	err = os.MkdirAll(attPath, 0700)
+	err = os.MkdirAll(attPath, 0o700)
 	require.NoError(t, err)
 
 	att := models.NewFileAttachment()
@@ -151,7 +151,7 @@ func TestFileHandler_SaveItemAttachment_Extractor(t *testing.T) {
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
 	attPath := filepath.Join(msgPath, "attachments")
-	err = os.MkdirAll(attPath, 0700)
+	err = os.MkdirAll(attPath, 0o700)
 	require.NoError(t, err)
 
 	attID := "att-123"
@@ -219,7 +219,7 @@ func TestFileHandler_SaveAttachment_Large(t *testing.T) {
 	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 1, 1, 0, "raw", "default", logger)
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
-	err = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0700)
+	err = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0o700)
 	require.NoError(t, err)
 
 	att := models.NewFileAttachment()
@@ -243,13 +243,13 @@ func TestFileHandler_WriteAttachmentsToMetadata(t *testing.T) {
 	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
-	err = os.MkdirAll(msgPath, 0700)
+	err = os.MkdirAll(msgPath, 0o700)
 	require.NoError(t, err)
 
 	// Create initial metadata.json
 	metaPath := filepath.Join(msgPath, "metadata.json")
 	initialMeta := `{"subject": "test"}`
-	err = os.WriteFile(metaPath, []byte(initialMeta), 0600)
+	err = os.WriteFile(metaPath, []byte(initialMeta), 0o600)
 	require.NoError(t, err)
 
 	attachments := []filehandler.AttachmentMetadata{
@@ -273,7 +273,7 @@ func TestFileHandler_Errors(t *testing.T) {
 
 	// Test workspace creation error (already exists as file)
 	filePath := filepath.Join(tmpDir, "file-not-dir")
-	err = os.WriteFile(filePath, []byte("test"), 0600)
+	err = os.WriteFile(filePath, []byte("test"), 0o600)
 	require.NoError(t, err)
 	fhBad := filehandler.NewFileHandler(filePath, nil, nil, 20, 8, 0, "raw", "default", logger)
 	err = fhBad.CreateWorkspace()
@@ -410,7 +410,7 @@ func TestFileHandler_CreateWorkspace_Symlink(t *testing.T) {
 
 	linkPath := filepath.Join(tmpDir, "link")
 	targetPath := filepath.Join(tmpDir, "target")
-	err = os.Mkdir(targetPath, 0700)
+	err = os.Mkdir(targetPath, 0o700)
 	require.NoError(t, err)
 
 	// Create a symlink
@@ -445,9 +445,9 @@ func TestFileHandler_Metadata_Errors(t *testing.T) {
 
 	// Test WriteAttachmentsToMetadata with invalid JSON
 	msgPath := filepath.Join(tmpDir, "invalid-json")
-	err = os.MkdirAll(msgPath, 0700)
+	err = os.MkdirAll(msgPath, 0o700)
 	require.NoError(t, err)
-	err = os.WriteFile(filepath.Join(msgPath, "metadata.json"), []byte("invalid json"), 0600)
+	err = os.WriteFile(filepath.Join(msgPath, "metadata.json"), []byte("invalid json"), 0o600)
 	require.NoError(t, err)
 	err = fh.WriteAttachmentsToMetadata(msgPath, nil)
 	assert.Error(t, err)
@@ -468,7 +468,7 @@ func TestFileHandler_SaveItem_Inlines(t *testing.T) {
 	fh := filehandler.NewFileHandler(tmpDir, mockClient, nil, 20, 8, 0, "extractor", "inlines", logger)
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
-	err = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0700)
+	err = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0o700)
 	require.NoError(t, err)
 
 	attID := "att-123"
@@ -506,7 +506,7 @@ func TestFileHandler_SaveError(t *testing.T) {
 	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
-	err = os.MkdirAll(msgPath, 0700)
+	err = os.MkdirAll(msgPath, 0o700)
 	require.NoError(t, err)
 
 	errs := []error{
@@ -672,7 +672,7 @@ func TestFileHandler_SaveItemAttachment_Extractor_Errors(t *testing.T) {
 	fh := filehandler.NewFileHandler(tmpDir, mockClient, nil, 20, 8, 0, "extractor", "default", logger)
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
-	_ = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0700)
+	_ = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0o700)
 
 	att := models.NewItemAttachment()
 	id := "att-1"
@@ -698,7 +698,7 @@ func TestFileHandler_SaveState_Errors(t *testing.T) {
 	logger := logrus.New()
 	// Use a file as a directory to cause OpenRoot to fail on Windows
 	invalidDir := filepath.Join(tmpDir, "file-not-dir")
-	_ = os.WriteFile(invalidDir, []byte("test"), 0600)
+	_ = os.WriteFile(invalidDir, []byte("test"), 0o600)
 
 	fh := filehandler.NewFileHandler(invalidDir, nil, nil, 20, 8, 0, "raw", "default", logger)
 
@@ -711,7 +711,7 @@ func TestFileHandler_LoadState_Malformed(t *testing.T) {
 	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	stateFile := filepath.Join(tmpDir, "bad-state.json")
-	_ = os.WriteFile(stateFile, []byte("invalid json"), 0600)
+	_ = os.WriteFile(stateFile, []byte("invalid json"), 0o600)
 
 	logger := logrus.New()
 	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
@@ -763,7 +763,7 @@ func TestFileHandler_CreateWorkspace_Errors(t *testing.T) {
 
 	// Test case: MkdirAll failure (using a file as parent)
 	parentFile := filepath.Join(tmpDir, "file")
-	_ = os.WriteFile(parentFile, []byte("test"), 0600)
+	_ = os.WriteFile(parentFile, []byte("test"), 0o600)
 	fh := filehandler.NewFileHandler(filepath.Join(parentFile, "child"), nil, nil, 20, 8, 0, "raw", "default", logger)
 	err := fh.CreateWorkspace()
 	assert.Error(t, err)
@@ -807,7 +807,7 @@ func TestFileHandler_extractFilesFromEnvelope_WriteError(t *testing.T) {
 	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "extractor", "default", logger)
 
 	// Create a file where the attachments directory should be to cause WriteFile to fail
-	_ = os.WriteFile(filepath.Join(tmpDir, "attachments"), []byte("not a dir"), 0600)
+	_ = os.WriteFile(filepath.Join(tmpDir, "attachments"), []byte("not a dir"), 0o600)
 
 	root, err := os.OpenRoot(tmpDir)
 	require.NoError(t, err)
@@ -838,10 +838,10 @@ func TestFileHandler_SaveError_UnmarshalError(t *testing.T) {
 	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
-	_ = os.MkdirAll(msgPath, 0700)
+	_ = os.MkdirAll(msgPath, 0o700)
 
 	// Pre-create error.json with invalid content
-	_ = os.WriteFile(filepath.Join(msgPath, "error.json"), []byte("invalid json"), 0600)
+	_ = os.WriteFile(filepath.Join(msgPath, "error.json"), []byte("invalid json"), 0o600)
 
 	err = fh.SaveError(msgPath, []error{fmt.Errorf("new error")})
 	assert.NoError(t, err) // Implementation ignores unmarshal errors and continues
@@ -859,7 +859,7 @@ func TestFileHandler_SaveStatusReport_MarshalError(t *testing.T) {
 	// We can't easily trigger json.Marshal error for JobStatus since it's a simple struct.
 	// But we can test OpenRoot failure for SaveStatusReport.
 	invalidDir := filepath.Join(tmpDir, "file-not-dir")
-	_ = os.WriteFile(invalidDir, []byte("test"), 0600)
+	_ = os.WriteFile(invalidDir, []byte("test"), 0o600)
 	fhBad := filehandler.NewFileHandler(invalidDir, nil, nil, 20, 8, 0, "raw", "default", logger)
 
 	err := fhBad.SaveStatusReport("user", nil, 0, 0)
@@ -874,11 +874,46 @@ func TestFileHandler_WriteAttachmentsToMetadata_ReadError(t *testing.T) {
 	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
 
 	msgPath := filepath.Join(tmpDir, "msg-1")
-	_ = os.MkdirAll(msgPath, 0700)
+	_ = os.MkdirAll(msgPath, 0o700)
 	// metadata.json is a directory, so ReadFile should fail
-	_ = os.Mkdir(filepath.Join(msgPath, "metadata.json"), 0700)
+	_ = os.Mkdir(filepath.Join(msgPath, "metadata.json"), 0o700)
 
 	err := fh.WriteAttachmentsToMetadata(msgPath, nil)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to read metadata file")
+}
+
+func TestFileHandler_SaveFileAttachment_StreamingFallback(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "fh-test-stream-fallback-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	logger := logrus.New()
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockClient := mocks.NewMockO365ClientInterface(ctrl)
+
+	fh := filehandler.NewFileHandler(tmpDir, mockClient, nil, 20, 8, 0, "raw", "default", logger)
+
+	msgPath := filepath.Join(tmpDir, "msg-1")
+	_ = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0o700)
+
+	att := models.NewFileAttachment()
+	id := "att-large-1"
+	name := "large_file.bin"
+	att.SetId(&id)
+	att.SetName(&name)
+
+	streamContent := "large streaming attachment data payload"
+	mockClient.EXPECT().GetAttachmentRawStream(gomock.Any(), "user@example.com", "msg-1", "att-large-1").Return(io.NopCloser(strings.NewReader(streamContent)), nil)
+
+	metas, err := fh.SaveAttachmentFromBytes(context.Background(), "user@example.com", "msg-1", msgPath, att, 1)
+	assert.NoError(t, err)
+	assert.Equal(t, 1, len(metas))
+	assert.Equal(t, "large_file.bin", metas[0].Name)
+	assert.Equal(t, int64(len(streamContent)), metas[0].Size)
+
+	savedData, err := os.ReadFile(filepath.Join(msgPath, "attachments", "01_large_file.bin"))
+	assert.NoError(t, err)
+	assert.Equal(t, streamContent, string(savedData))
 }

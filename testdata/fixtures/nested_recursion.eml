@@ -1,0 +1,15 @@
+From: sender@test.com
+To: MeganB@M365x214355.onmicrosoft.com
+Subject: Nested Canary
+Content-Type: multipart/mixed; boundary="BOUND_NESTED"
+
+--BOUND_NESTED
+Content-Type: text/plain; charset=utf-8
+
+Nested Unicode Content
+--BOUND_NESTED
+Content-Type: text/plain; name="01_1_nested_canary.txt"
+Content-Disposition: attachment; filename="01_1_nested_canary.txt"
+
+Nested Unicode Content
+--BOUND_NESTED--

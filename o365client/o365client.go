@@ -17,13 +17,18 @@ package o365client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"math"
+	// #nosec G404 - math/rand is used exclusively for exponential backoff jitter and retry timing, not cryptographic security.
+	// nosemgrep: go.lang.security.audit.crypto.math_random.math-random-used
 	"math/rand"
 	"net/http"
 	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -344,9 +349,7 @@ func (c *O365Client) GetMailboxHealthCheck(ctx context.Context, mailboxName stri
 		// The 'sizeInBytes' property is not a first-class property in the Go model.
 		// We must retrieve it from the additional data bag.
 		additionalData := folder.GetAdditionalData()
-		if size, ok := additionalData["sizeInBytes"]; ok {
-			folderSize = parseFolderSize(size)
-		}
+		folderSize = getFolderSizeFromAdditionalData(additionalData)
 
 		folderStat := FolderStats{
 			Name:       *folder.GetDisplayName(),
@@ -572,8 +575,34 @@ func Ptr[T any](v T) *T {
 	return &v
 }
 
-// parseFolderSize extracts an int64 from various types that Kiota might use for sizeInBytes.
+// getFolderSizeFromAdditionalData searches additionalData case-insensitively for size keys.
+func getFolderSizeFromAdditionalData(additionalData map[string]any) int64 {
+	if additionalData == nil {
+		return 0
+	}
+	for k, v := range additionalData {
+		if strings.EqualFold(k, "sizeInBytes") || strings.EqualFold(k, "size") {
+			if val := parseFolderSize(v); val > 0 {
+				return val
+			}
+		}
+	}
+	return 0
+}
+
+// parseFolderSize extracts an int64 from various types that Kiota, JSON decoders, or Graph API might use for sizeInBytes.
 func parseFolderSize(size interface{}) int64 {
+	if size == nil {
+		return 0
+	}
+
+	// 1. Unwrap Kiota UntypedNode or custom wrappers that provide GetValue()
+	if un, ok := size.(interface{ GetValue() any }); ok {
+		if inner := un.GetValue(); inner != nil {
+			return parseFolderSize(inner)
+		}
+	}
+
 	switch v := size.(type) {
 	case *int64:
 		if v != nil {
@@ -583,15 +612,57 @@ func parseFolderSize(size interface{}) int64 {
 		if v != nil {
 			return int64(*v)
 		}
+	case *int:
+		if v != nil {
+			return int64(*v)
+		}
 	case int64:
 		return v
 	case int32:
+		return int64(v)
+	case int:
+		return int64(v)
+	case uint64:
+		if v > math.MaxInt64 {
+			return math.MaxInt64
+		}
+		return int64(v)
+	case uint32:
+		return int64(v)
+	case uint:
+		if uint64(v) > math.MaxInt64 {
+			return math.MaxInt64
+		}
 		return int64(v)
 	case float64:
 		return int64(v)
 	case *float64:
 		if v != nil {
 			return int64(*v)
+		}
+	case float32:
+		return int64(v)
+	case *float32:
+		if v != nil {
+			return int64(*v)
+		}
+	case string:
+		if val, err := strconv.ParseInt(v, 10, 64); err == nil {
+			return val
+		}
+		if fval, err := strconv.ParseFloat(v, 64); err == nil {
+			return int64(fval)
+		}
+	case *string:
+		if v != nil {
+			return parseFolderSize(*v)
+		}
+	case json.Number:
+		if val, err := v.Int64(); err == nil {
+			return val
+		}
+		if fval, err := v.Float64(); err == nil {
+			return int64(fval)
 		}
 	}
 	return 0

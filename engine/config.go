@@ -24,10 +24,13 @@ type Config struct {
 	WorkspacePath string `json:"workspacePath,omitempty"`
 
 	// Token settings
-	TokenString     string `json:"tokenString,omitempty"`
-	TokenFile       string `json:"tokenFile,omitempty"`
-	TokenEnv        bool   `json:"tokenEnv,omitempty"`
-	RemoveTokenFile bool   `json:"removeTokenFile,omitempty"`
+	TokenString         string `json:"tokenString,omitempty"`
+	TokenFile           string `json:"tokenFile,omitempty"`
+	TokenEnv            bool   `json:"tokenEnv,omitempty"`
+	RemoveTokenFile     bool   `json:"removeTokenFile,omitempty"`
+	SecretMasterKey     string `json:"secretMasterKey,omitempty"`
+	SecretMasterKeyEnv  string `json:"secretMasterKeyEnv,omitempty"`
+	SecretMasterKeyFile string `json:"secretMasterKeyFile,omitempty"`
 
 	// General settings
 	DebugLogging         bool   `json:"debugLogging,omitempty"`
@@ -105,6 +108,9 @@ func (c *Config) SetDefaults() {
 	}
 	if c.InboxFolder == "" {
 		c.InboxFolder = "Inbox"
+	}
+	if c.SecretMasterKeyEnv == "" {
+		c.SecretMasterKeyEnv = "SECRETPROTECTOR_MASTER_KEY"
 	}
 	if c.ConvertBody == "" {
 		c.ConvertBody = "none"
@@ -192,7 +198,7 @@ func (c *Config) Validate() error {
 		}
 		// In Unix-like systems, check for execute permission.
 		// This check is basic and might not be sufficient for all environments (e.g., Windows).
-		if info.Mode()&0111 == 0 {
+		if info.Mode()&0o111 == 0 {
 			return fmt.Errorf("chromiumPath '%s' is not executable", c.ChromiumPath)
 		}
 	}

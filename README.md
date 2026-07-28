@@ -99,8 +99,22 @@ At the end of each run, `o365mbx` generates a status report at the root of the w
   },
   "job_processed_count": 45,
   "job_error_count": 2
-}
 ```
+
+## Diagnostic Process Exit Codes
+
+`o365mbx` returns granular diagnostic exit codes on failure to simplify integration with orchestrators (Kubernetes, Airflow, systemd, Cron):
+
+| Exit Code | Constant Name | Description & Cause |
+| :---: | :--- | :--- |
+| **`0`** | `ExitSuccess` | Process completed successfully with zero fatal errors. |
+| **`2`** | `ExitConfigError` | Invalid CLI flags, missing required configuration options, or invalid email format. |
+| **`10`** | `ExitAuthError` | Authentication failure, missing token source, or expired JWT token. |
+| **`20`** | `ExitAPIError` | Fatal Microsoft Graph API error (e.g. invalid delta link token or unrecoverable HTTP response). |
+| **`30`** | `ExitFileSystemError` | Local storage/filesystem error (e.g. workspace creation failure or permission denied). |
+| **`130`** | `ExitInterrupted` | Execution interrupted via OS signal (`SIGINT` / `SIGTERM` / `Ctrl+C`). |
+
+---
 
 ## Metadata JSON Specifications
 
@@ -202,6 +216,9 @@ All configuration options can be controlled via command-line arguments. Any flag
 | `-token-file`                   | Path to a file containing the JWT token.                                  |          |         |
 | `-token-env`                    | Read JWT token from the `JWT_TOKEN` environment variable.                 |          | `false` |
 | `-remove-token-file`            | Remove the token file after use.                                          | No       | `false` |
+| `-secret-master-key`            | Raw 64-char hex master key for `secretprotector` AES-256-GCM decryption. | No       |         |
+| `-secret-master-key-env`        | Env var name storing master key (defaults to `SECRETPROTECTOR_MASTER_KEY`). | No     | `SECRETPROTECTOR_MASTER_KEY` |
+| `-secret-master-key-file`       | File path storing 64-char hex master key (requires 0400/0600 on Linux).   | No       |         |
 | **General**                     |                                                                           |          |         |
 | `-config`                       | Path to a JSON configuration file.                                        | No       |         |
 | `-debug`                        | Enable debug logging.                                                     | No       | `false` |
@@ -301,7 +318,7 @@ For a more permanent setup, you can use a JSON file (e.g., `config.json`) and pa
     *   `chunkSizeMB`: (Integer) Chunk size in MB for downloading large attachments.
 *   **Email Body Conversion**:
     *   `convertBody`: (String) The conversion mode for email bodies. Can be `none` (no conversion, saves `.html`), `text` (converts to plain text, saves `.txt`), or `pdf` (converts to PDF, saves `.pdf`). Defaults to `none`.
-    *   `chromiumPath`: (String) The absolute path to a headless Chromium or Google Chrome binary. This is **required** if `convertBody` is set to `pdf`.
+    *   `chromiumPath`: (String) The absolute path to a headless Chromium/Chrome binary (e.g., `d:\inet\www\chromium\bin\chrome.exe` on Windows or `/u01/chromium/chrome` on Linux) OR a DevTools WebSocket control URL to an **always-running Chrome daemon** (e.g., `ws://127.0.0.1:9222`). Required if `convertBody` is set to `pdf`. Connecting to a pre-launched Chrome daemon eliminates process spawning overhead and speeds up PDF rendering.
 *   **ItemAttachment Handling**:
     *   `msgHandler`: (String) Determines how `.msg` and `.eml` attachments (ItemAttachments) are processed.
         *   `raw` (Default): Downloads the attachment as-is (MIME/EML format).
@@ -317,6 +334,46 @@ For maximum security, it is recommended to use an Azure App Registration with th
 *   For `route` mode, which moves emails, the `Mail.ReadWrite` permission is required.
 
 ## Examples
+
+### 0. Embedding as a Go Library (e.g., in `service-gateway`)
+
+`o365mbx` can be embedded directly into other Go applications (such as microservices or daemon gateways) via the high-level `downloader` package:
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+
+	"o365mbx/downloader"
+	"o365mbx/engine"
+)
+
+func main() {
+	ctx := context.Background()
+
+	cfg := &engine.Config{
+		MailboxName:          "user@example.com",
+		WorkspacePath:        "/data/mailboxes/user1",
+		TokenString:          "YOUR_JWT_TOKEN",
+		ProcessingMode:       "full",
+		ConvertBody:          "text",
+		MaxParallelDownloads: 5,
+	}
+
+	// Option A: Convenient one-liner execution
+	if err := downloader.Run(ctx, cfg); err != nil {
+		log.Fatalf("Mailbox download failed: %v", err)
+	}
+
+	// Option B: Advanced instance control
+	// dl, err := downloader.New(cfg, customLogrusLogger)
+	// err = dl.Execute(ctx, os.Stdout)
+}
+```
+
+---
 
 ### 1. Basic Run with Token String
 
@@ -428,6 +485,15 @@ This example downloads all emails and converts their bodies from HTML to plain t
     -token-file "/path/to/token.txt" \
     -convert-body text
 ```
+
+### 11. Multi-Tenant Enterprise Security & Permission Guidance (Linux / Windows)
+
+When deploying `o365mbx` in enterprise multi-tenant server environments:
+* **Linux Umask Recommendation**: Run the binary under a restricted service account with `umask 0077` (or `umask 0027`) to restrict directory (`0700`) and artifact file (`0600`) access strictly to the owner.
+* **Workspace Isolation**: Always specify an absolute, dedicated workspace directory per mailbox (`-workspace /data/mailboxes/user1`) to prevent workspace cross-talk or unauthorized file reads via `os.OpenRoot`.
+* **Chrome Daemon Isolation**: When running PDF conversion (`-convert-body pdf`) against a shared Chrome daemon (`ws://127.0.0.1:9222`), ensure the daemon process runs under isolated non-privileged process credentials.
+
+---
 
 ### 10. Health Check Examples
 

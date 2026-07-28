@@ -98,39 +98,131 @@ func TestEmailProcessor_ProcessBody(t *testing.T) {
 	assert.Nil(t, res)
 }
 
+func findSystemChromiumPath() string {
+	if envPath := os.Getenv("PDF_TEST_CHROMIUM_PATH"); envPath != "" {
+		return envPath
+	}
+	if envPath := os.Getenv("CHROMIUM_PATH"); envPath != "" {
+		return envPath
+	}
+	candidates := []string{
+		`d:\inet\www\chromium\bin\chrome.exe`,
+		`/u01/chromium/chrome`,
+		`/u01/chromium`,
+		`C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe`,
+		`C:\Program Files\Microsoft\Edge\Application\msedge.exe`,
+		`C:\Program Files\Google\Chrome\Application\chrome.exe`,
+		`C:\Program Files (x86)\Google\Chrome\Application\chrome.exe`,
+		`/usr/bin/chromium`,
+		`/usr/bin/chromium-browser`,
+		`/usr/bin/google-chrome`,
+		`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome`,
+	}
+	for _, candidate := range candidates {
+		if _, err := os.Stat(candidate); err == nil {
+			return candidate
+		}
+	}
+	return ""
+}
+
 func TestEmailProcessor_ConvertToPDF(t *testing.T) {
-	chromiumPath := os.Getenv("PDF_TEST_CHROMIUM_PATH")
+	chromiumPath := findSystemChromiumPath()
 	if chromiumPath == "" {
-		t.Skip("Skipping PDF conversion test: PDF_TEST_CHROMIUM_PATH environment variable not set")
+		t.Skip("Skipping PDF conversion test: No Chromium/Edge browser found on system")
 	}
 
 	logger := logrus.New()
 	ep := NewEmailProcessor(logger)
 
 	ctx := context.Background()
-	err := ep.Initialize(ctx, chromiumPath, 1)
+	err := ep.Initialize(ctx, chromiumPath, 2)
 	require.NoError(t, err)
 	defer func() {
 		_ = ep.Close()
 	}()
 
-	html := "<html><body><h1>Test PDF</h1></body></html>"
+	html := "<html><body><h1>Test PDF Generation</h1><p>High-fidelity rendering test.</p></body></html>"
 	pdfBytes, err := ep.ConvertToPDF(ctx, html)
 
 	assert.NoError(t, err)
 	assert.NotNil(t, pdfBytes)
-	assert.True(t, len(pdfBytes) > 0)
+	assert.True(t, len(pdfBytes) > 100)
 
-	// Verify PDF header
+	// Verify PDF header magic bytes (%PDF)
 	if len(pdfBytes) >= 4 {
 		assert.Equal(t, "%PDF", string(pdfBytes[:4]))
 	}
 }
 
-func TestEmailProcessor_PoolConcurrency(t *testing.T) {
-	chromiumPath := os.Getenv("PDF_TEST_CHROMIUM_PATH")
+func TestEmailProcessor_ConvertToPDF_ComplexLayout(t *testing.T) {
+	chromiumPath := findSystemChromiumPath()
 	if chromiumPath == "" {
-		t.Skip("Skipping PDF conversion test: PDF_TEST_CHROMIUM_PATH environment variable not set")
+		t.Skip("Skipping PDF conversion test: No Chromium/Edge browser found on system")
+	}
+
+	logger := logrus.New()
+	ep := NewEmailProcessor(logger)
+
+	ctx := context.Background()
+	err := ep.Initialize(ctx, chromiumPath, 2)
+	require.NoError(t, err)
+	defer func() {
+		_ = ep.Close()
+	}()
+
+	complexHTML := `
+	<!DOCTYPE html>
+	<html>
+	<head>
+		<style>
+			body { font-family: sans-serif; background-color: #f4f4f4; margin: 20px; }
+			.header { background: #0078d4; color: white; padding: 20px; border-radius: 8px; }
+			.content { display: flex; gap: 10px; margin-top: 20px; }
+			.card { background: white; padding: 15px; border-radius: 5px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+			table { width: 100%; border-collapse: collapse; margin-top: 20px; }
+			th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+			th { background-color: #f2f2f2; }
+		</style>
+	</head>
+	<body>
+		<div class="header">
+			<h1>Monthly Invoice & Operational Summary 🚀</h1>
+			<p>Unicode Test: 日本語, 繁體中文, العربية, 🚀 Mailbox Analytics</p>
+		</div>
+		<div class="content">
+			<div class="card">
+				<h3>Total Processed</h3>
+				<p>1,250 Messages</p>
+			</div>
+			<div class="card">
+				<h3>Status</h3>
+				<p style="color: green; font-weight: bold;">SUCCESS</p>
+			</div>
+		</div>
+		<table>
+			<tr><th>Item</th><th>Quantity</th><th>Price</th></tr>
+			<tr><td>PDF Engine License</td><td>1</td><td>$0.00</td></tr>
+			<tr><td>Graph API Extraction</td><td>1000</td><td>$0.00</td></tr>
+		</table>
+		<svg height="100" width="100">
+			<circle cx="50" cy="50" r="40" stroke="black" stroke-width="3" fill="red" />
+		</svg>
+	</body>
+	</html>
+	`
+
+	pdfBytes, err := ep.ConvertToPDF(ctx, complexHTML)
+	assert.NoError(t, err)
+	assert.NotNil(t, pdfBytes)
+	assert.True(t, len(pdfBytes) > 500)
+	assert.Equal(t, "%PDF", string(pdfBytes[:4]))
+}
+
+func TestEmailProcessor_PoolConcurrency(t *testing.T) {
+	chromiumPath := findSystemChromiumPath()
+	if chromiumPath == "" {
+		t.Skip("Skipping PDF conversion test: No Chromium/Edge browser found on system")
 	}
 
 	logger := logrus.New()
@@ -159,9 +251,9 @@ func TestEmailProcessor_PoolConcurrency(t *testing.T) {
 }
 
 func TestEmailProcessor_Recycling(t *testing.T) {
-	chromiumPath := os.Getenv("PDF_TEST_CHROMIUM_PATH")
+	chromiumPath := findSystemChromiumPath()
 	if chromiumPath == "" {
-		t.Skip("Skipping PDF conversion test: PDF_TEST_CHROMIUM_PATH environment variable not set")
+		t.Skip("Skipping PDF conversion test: No Chromium/Edge browser found on system")
 	}
 
 	logger := logrus.New()
@@ -314,6 +406,16 @@ func TestEmailProcessor_Initialize_Errors(t *testing.T) {
 	assert.NoError(t, err)
 }
 
+func TestEmailProcessor_Initialize_DaemonURL(t *testing.T) {
+	logger := logrus.New()
+	ep := NewEmailProcessor(logger)
+
+	// Test invalid websocket URL connection (should attempt WebSocket connection without file stat error)
+	err := ep.Initialize(context.Background(), "ws://127.0.0.1:59999/devtools/browser/fake", 1)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to initialize browser instance")
+}
+
 func TestEmailProcessor_Close_Nil(t *testing.T) {
 	logger := logrus.New()
 	ep := NewEmailProcessor(logger)
@@ -323,9 +425,9 @@ func TestEmailProcessor_Close_Nil(t *testing.T) {
 }
 
 func TestEmailProcessor_ConvertToPDF_ContextCancelled(t *testing.T) {
-	chromiumPath := os.Getenv("PDF_TEST_CHROMIUM_PATH")
+	chromiumPath := findSystemChromiumPath()
 	if chromiumPath == "" {
-		t.Skip("Skipping PDF conversion test: PDF_TEST_CHROMIUM_PATH environment variable not set")
+		t.Skip("Skipping PDF conversion test: No Chromium/Edge browser found on system")
 	}
 
 	logger := logrus.New()
@@ -364,9 +466,9 @@ func TestEmailProcessor_CleanHTML_NestedAndStyles(t *testing.T) {
 }
 
 func TestEmailProcessor_ConvertToPDF_InvalidContent(t *testing.T) {
-	chromiumPath := os.Getenv("PDF_TEST_CHROMIUM_PATH")
+	chromiumPath := findSystemChromiumPath()
 	if chromiumPath == "" {
-		t.Skip("Skipping PDF conversion test: PDF_TEST_CHROMIUM_PATH environment variable not set")
+		t.Skip("Skipping PDF conversion test: No Chromium/Edge browser found on system")
 	}
 
 	logger := logrus.New()

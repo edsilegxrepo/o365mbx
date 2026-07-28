@@ -8,12 +8,13 @@ import (
 	"context"
 	"errors"
 	"io"
-	"o365mbx/mocks"
-	"o365mbx/o365client"
-	"o365mbx/presenter"
 	"os"
 	"strings"
 	"testing"
+
+	"o365mbx/mocks"
+	"o365mbx/o365client"
+	"o365mbx/presenter"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

@@ -1,0 +1,11 @@
+From: sender@test.com
+To: MeganB@M365x214355.onmicrosoft.com
+Subject: Complex Nested
+Content-Type: multipart/mixed; boundary="BOUND_COMPLEX"
+
+--BOUND_COMPLEX
+Content-Type: text/plain; name="04_1_nested_special_chars_!@#.txt"
+Content-Disposition: attachment; filename="04_1_nested_special_chars_!@#.txt"
+
+Special chars test
+--BOUND_COMPLEX--

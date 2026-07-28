@@ -24,6 +24,170 @@ The application is structured into several modular Go packages, each with distin
 6.  **`apperrors` package:**
     Defines custom error types (`APIError`, `FileSystemError`) and sentinel errors (like `ErrMissingDeltaLink`) used throughout the application. This provides a structured way to categorize and handle different classes of errors, leading to clearer logging and more precise error recovery strategies.
 
+7.  **`downloader` package:**
+    Serves as the high-level Go library entry point. It encapsulates dependency injection, access token resolution (JWT string, file, or environment variable), browser pool lifecycles, and execution orchestration. This package allows `o365mbx` to be embedded directly as a library in external Go programs (such as `service-gateway`) without requiring subprocess invocation or duplicate boilerplate code.
+
+## Library Integration (`o365mbx/downloader`):
+
+`o365mbx` is designed as both a standalone CLI application and a reusable Go module. The core execution engine is decoupled from command-line argument parsing, allowing external Go microservices (e.g. `service-gateway`) to import and execute mailbox sync operations natively.
+
+### Architecture Decoupling Diagram:
+
+```mermaid
+flowchart TD
+    ExtApp["External Go Application<br/>(e.g., service-gateway)"] -->|Imports o365mbx/downloader| Downloader["o365mbx/downloader (Library)<br/>• Token Resolution & Access Token Lifecycle<br/>• Client, Processor & FileHandler Dependency Injection<br/>• Browser Pool Lifecycle & PDF Recycling<br/>• Execution Modes (Full, Incremental, Route, HealthCheck)"]
+    CLI["CLI Application (main.go)"] -->|Parses CLI Flags & Calls downloader| Downloader
+    
+    Downloader -->|Orchestrates| O365Client["o365client"]
+    Downloader -->|Orchestrates| EmailProc["emailprocessor"]
+    Downloader -->|Orchestrates| CoreEngine["filehandler & engine"]
+```
+
+### Code Example: Embedding in External Services (`service-gateway`)
+
+External Go applications can invoke mailbox downloads in **three lines of code** using the `downloader.Run` function, or gain granular control using `downloader.New`:
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+
+	"o365mbx/downloader"
+	"o365mbx/engine"
+)
+
+func SyncMailbox(ctx context.Context, mailboxEmail, targetWorkspace, jwtToken string) error {
+	cfg := &engine.Config{
+		MailboxName:          mailboxEmail,
+		WorkspacePath:        targetWorkspace,
+		TokenString:          jwtToken,
+		ProcessingMode:       "full",
+		ConvertBody:          "pdf",
+		ChromiumPath:         "ws://127.0.0.1:9222", // Shared Chrome daemon
+		MaxParallelDownloads: 10,
+	}
+
+	// Option A: One-liner execution with default logger and stdout
+	return downloader.Run(ctx, cfg)
+
+	// Option B: Advanced control with custom output writer and logger
+	// dl, err := downloader.New(cfg, customLogrusLogger)
+	// if err != nil {
+	//     return err
+	// }
+	// return dl.Execute(ctx, os.Stdout)
+}
+```
+
+### Production Best Practices when Embedding as a Poller (e.g. in `service-gateway`)
+
+When embedding `o365mbx/downloader` into a long-running microservice daemon to process a continuous influx of emails, implement the following architectural best practices:
+
+1. **Continuous Incremental Mode (`ProcessingMode = "incremental"`)**:
+   Always set `ProcessingMode: "incremental"` and specify a persistent `StateFilePath` (e.g., `/data/state/user_state.json`). On the first run, the library performs an initial sync and captures the Graph API `deltaLink`. On subsequent polling cycles, the engine reuses the `deltaLink` to query only new/modified emails, executing in under 100ms when no new messages exist.
+
+2. **Continuous Polling Loop Pattern with Context Cancellation**:
+   Wrap the poller loop in a `time.Ticker` select block that respects `ctx.Done()`. Log or handle non-fatal transient errors per iteration without crashing the daemon loop:
+
+   ```go
+   func StartMailboxPoller(ctx context.Context, cfg *engine.Config, pollInterval time.Duration) {
+       ticker := time.NewTicker(pollInterval)
+       defer ticker.Stop()
+
+       for {
+           select {
+           case <-ctx.Done():
+               log.Println("Stopping mailbox poller daemon...")
+               return
+           case <-ticker.C:
+               if err := downloader.Run(ctx, cfg); err != nil {
+                   log.Printf("Poller iteration warning (retrying next interval): %v", err)
+               }
+           }
+       }
+   }
+   ```
+
+3. **Shared Chrome Daemon Connection (`ChromiumPath`)**:
+   For PDF conversions under high email volume, set `ChromiumPath: "ws://127.0.0.1:9222"`. Connecting directly to an external Chrome daemon via DevTools WebSocket avoids launching new browser processes on every polling cycle and significantly reduces CPU and memory overhead.
+
+4. **Per-Message Timeout Guard (`MaxExecutionTimeMsg`)**:
+   Configure `MaxExecutionTimeMsg: 120` (or appropriate timeout seconds) to guarantee that a corrupted, massive HTML, or recursively nested email attachment will never stall a worker goroutine or freeze the polling loop.
+
+5. **Atomic State File Safety**:
+   `filehandler` uses atomic write-and-rename (`state.json.tmp` ➔ `state.json`) inside `filepath.Dir(stateFilePath)`, ensuring that state files cannot be corrupted even if the host service or container experiences sudden restart.
+
+---
+
+## JWT Stored Token Security (`secretprotector` Integration):
+
+### Zero-Trust Credential Security Policy
+
+`o365mbx` mandates that sensitive credentials stored at rest (`-token-file` or `-token-env` / `JWT_TOKEN`) **MUST** be encrypted using AES-256-GCM authenticated encryption via the `secretprotector` library (`libsecsecrets`). Unencrypted plaintext tokens stored in files or static environment variables are strictly prohibited and rejected at runtime.
+
+### Master Key Security & OS Enforcement
+- **Linux/Unix**: Master key files must strictly enforce owner-only permissions (`0400` or `0600`). Key files with broad permissions (e.g., `0644` or `0777`) are automatically rejected.
+- **Windows**: Master key files must not reside in shared or volatile system directories (such as `Public`, `\Temp\`, or `/temp/`).
+- **Memory Scrubbing**: Sensitive cryptographic key buffers in RAM are zeroed out via `libsecsecrets.ZeroBuffer` immediately after O365 client initialization.
+
+### 1. Security Boundaries: Stored vs. Streamed Secrets
+
+| Secret Category | CLI Flags / Sources | Security Requirement | Handling Mechanism |
+| :--- | :--- | :--- | :--- |
+| **Stored Secrets (At Rest)** | `-token-file`, `-token-env` (`JWT_TOKEN`) | **Mandatory AES-256-GCM Encryption** | Processed through `libsecsecrets.Decrypt()`. Unencrypted stored tokens are rejected immediately with exit code `10` (`ExitAuthError`). |
+| **Streamed Secrets (In RAM)** | `-token-string` | In-Memory Ephemeral Execution | Streamed dynamically into RAM at runtime. Bypasses disk decryption and is scrubbed from memory on completion. |
+
+---
+
+### 2. Master Key Resolution & Precedence Architecture
+
+To decrypt stored token ciphertexts, `secretprotector` resolves a 32-byte master key (`libsecsecrets.ResolveKey`) using a strict precedence hierarchy:
+
+1. **`-secret-master-key` (CLI Flag / Config)**: Direct 64-character hex key override (Highest Precedence).
+2. **`-secret-master-key-env` (Environment Variable)**: Name of the environment variable storing the hex key (Defaults to `SECRETPROTECTOR_MASTER_KEY`).
+3. **`-secret-master-key-file` (File Path)**: Path to a file containing the 64-character hex key (Lowest Precedence).
+
+#### OS-Level File Security Enforcement:
+* **Linux/Unix**: The key file **must** strictly enforce owner-only permissions (`0400` or `0600`). Files with `0644` or `0777` permissions are rejected with `libsecsecrets.ErrInsecurePermissions`.
+* **Windows**: The key file **must not** reside in shared or volatile system locations (such as `Public`, `\Temp\`, or `/temp/`). Files in these paths are rejected with `libsecsecrets.ErrInsecureLocation`.
+
+---
+
+### 3. Enforced Decryption Pipeline Diagram
+
+```mermaid
+graph TD
+    A["Input Source: -token-file OR -token-env (JWT_TOKEN)"] --> B["1. Read Raw Ciphertext Bytes"]
+    B --> C["2. Resolve Master Key via libsecsecrets.ResolveKey()<br/>(-secret-master-key > ENV > FILE [0400/0600])"]
+    
+    C -->|Master Key Resolved| D["3. Decrypt Ciphertext via libsecsecrets.Decrypt()"]
+    C -->|Master Key Missing or Insecure| E["ABORT EXECUTION<br/>Exit Code 10 (ExitAuthError)<br/>Error: Master Key Required"]
+    
+    D -->|Decryption Succeeded| F["Plaintext OAuth Token for RAM Execution"]
+    D -->|Decryption Failed / Unencrypted| G["ABORT EXECUTION<br/>Exit Code 10 (ExitAuthError)<br/>Security Error: Stored Token must be Encrypted Ciphertext"]
+
+    classDef success fill:#1b4332,stroke:#40916c,stroke-width:2px,color:#fff;
+    classDef failure fill:#4a0e17,stroke:#a71d2a,stroke-width:2px,color:#fff;
+    classDef process fill:#1d2d44,stroke:#3e5c76,stroke-width:2px,color:#fff;
+
+    class F success;
+    class E,G failure;
+    class A,B,C,D process;
+```
+
+---
+
+### 4. Memory Safety & Buffer Zeroing
+
+To minimize the exposure window of sensitive cryptographic keys in memory:
+* Immediately after decryption, `libsecsecrets.ZeroBuffer([]byte(masterKey))` fills the master key byte slice with zeros.
+* Transient byte slices used during decryption are managed via `sync.Pool` and zeroed out before being returned to the pool.
+
+---
+
 ## Key Design Principles:
 
 *   **Modularity:** Clear separation of concerns across packages for better organization and testability.

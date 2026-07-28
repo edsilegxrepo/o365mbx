@@ -4,16 +4,31 @@
 package main
 
 import (
+	"context"
+	"criticalsys/secretprotector/pkg/libsecsecrets"
 	"flag"
 	"io"
 	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"o365mbx/engine"
 )
 
 func TestLoadAccessToken(t *testing.T) {
+	ctx := context.Background()
+	masterKeyHex, errKey := libsecsecrets.GenerateKey()
+	require.NoError(t, errKey)
+	masterKeyBytes, errRes := libsecsecrets.ResolveKey(ctx, masterKeyHex, "", "")
+	require.NoError(t, errRes)
+
+	encryptedFileToken, errEncFile := libsecsecrets.Encrypt(ctx, "file-token", masterKeyBytes)
+	require.NoError(t, errEncFile)
+
+	encryptedEnvToken, errEncEnv := libsecsecrets.Encrypt(ctx, "env-token", masterKeyBytes)
+	require.NoError(t, errEncEnv)
+
 	tests := []struct {
 		name    string
 		cfg     *engine.Config
@@ -29,9 +44,12 @@ func TestLoadAccessToken(t *testing.T) {
 		},
 		{
 			name: "TokenFile source",
-			cfg:  &engine.Config{TokenFile: "temp-token.txt"},
+			cfg: &engine.Config{
+				TokenFile:       "temp-token.txt",
+				SecretMasterKey: masterKeyHex,
+			},
 			setup: func() {
-				_ = os.WriteFile("temp-token.txt", []byte("file-token"), 0644)
+				_ = os.WriteFile("temp-token.txt", []byte(encryptedFileToken), 0o600)
 			},
 			cleanup: func() {
 				_ = os.Remove("temp-token.txt")
@@ -39,15 +57,21 @@ func TestLoadAccessToken(t *testing.T) {
 			want: "file-token",
 		},
 		{
-			name:    "TokenFile read error",
-			cfg:     &engine.Config{TokenFile: "non-existent.txt"},
+			name: "TokenFile read error",
+			cfg: &engine.Config{
+				TokenFile:       "non-existent.txt",
+				SecretMasterKey: masterKeyHex,
+			},
 			wantErr: true,
 		},
 		{
 			name: "TokenEnv source",
-			cfg:  &engine.Config{TokenEnv: true},
+			cfg: &engine.Config{
+				TokenEnv:        true,
+				SecretMasterKey: masterKeyHex,
+			},
 			setup: func() {
-				_ = os.Setenv("JWT_TOKEN", "env-token")
+				_ = os.Setenv("JWT_TOKEN", encryptedEnvToken)
 			},
 			cleanup: func() {
 				_ = os.Unsetenv("JWT_TOKEN")
@@ -56,7 +80,10 @@ func TestLoadAccessToken(t *testing.T) {
 		},
 		{
 			name: "TokenEnv missing",
-			cfg:  &engine.Config{TokenEnv: true},
+			cfg: &engine.Config{
+				TokenEnv:        true,
+				SecretMasterKey: masterKeyHex,
+			},
 			setup: func() {
 				_ = os.Unsetenv("JWT_TOKEN")
 			},
@@ -239,7 +266,39 @@ func TestOverrideConfigWithFlags(t *testing.T) {
 		"-max-execution-time-msg", "60",
 	})
 
-	overrideConfigWithFlagsLocal(cfg, fs, &dummyStr, tokenString, tokenFile, tokenEnv, removeTokenFile, mailbox, workspace, debug, mode, inbox, state, processed, errorF, timeout, parallel, apiRate, apiBurst, retries, backoff, chunk, large, band, convert, chromium, msgH, extL1, health, details, maxExec)
+	flags := &cliFlags{
+		configPath:                 &dummyStr,
+		tokenString:                tokenString,
+		tokenFile:                  tokenFile,
+		tokenEnv:                   tokenEnv,
+		removeTokenFile:            removeTokenFile,
+		mailboxName:                mailbox,
+		workspacePath:              workspace,
+		debug:                      debug,
+		processingMode:             mode,
+		inboxFolder:                inbox,
+		stateFilePath:              state,
+		processedFolder:            processed,
+		errorFolder:                errorF,
+		timeoutSeconds:             timeout,
+		maxParallelDownloads:       parallel,
+		apiCallsPerSecond:          apiRate,
+		apiBurst:                   apiBurst,
+		maxRetries:                 retries,
+		initialBackoffSeconds:      backoff,
+		chunkSizeMB:                chunk,
+		largeAttachmentThresholdMB: large,
+		bandwidthLimitMBs:          band,
+		convertBody:                convert,
+		chromiumPath:               chromium,
+		msgHandler:                 msgH,
+		attachmentExtractionL1:     extL1,
+		healthCheck:                health,
+		messageDetailsFolder:       details,
+		maxExecutionTimeMsg:        maxExec,
+	}
+
+	overrideConfigWithFlagsLocal(cfg, fs, flags)
 
 	assert.Equal(t, "ts", cfg.TokenString)
 	assert.Equal(t, "tf", cfg.TokenFile)
@@ -329,15 +388,21 @@ func TestRun(t *testing.T) {
 }
 
 func TestRun_TokenFileRemoval(t *testing.T) {
+	ctx := context.Background()
+	masterKeyHex, errKey := libsecsecrets.GenerateKey()
+	require.NoError(t, errKey)
+	masterKeyBytes, errRes := libsecsecrets.ResolveKey(ctx, masterKeyHex, "", "")
+	require.NoError(t, errRes)
+
+	encryptedToken, errEnc := libsecsecrets.Encrypt(ctx, "test-token", masterKeyBytes)
+	require.NoError(t, errEnc)
+
 	tokenFile := "temp-token-removal.txt"
-	_ = os.WriteFile(tokenFile, []byte("test-token"), 0644)
+	_ = os.WriteFile(tokenFile, []byte(encryptedToken), 0o600)
 	// We don't defer removal here because we want to test if run() removes it
 
-	args := []string{"o365mbx", "-mailbox", "test@test.com", "-token-file", tokenFile, "-remove-token-file", "-workspace", "test-wp"}
+	args := []string{"o365mbx", "-mailbox", "test@test.com", "-token-file", tokenFile, "-secret-master-key", masterKeyHex, "-remove-token-file", "-workspace", "test-wp"}
 
-	// This will fail at client creation, but the defer for token removal should still run if it reached that point.
-	// Actually, loadAccessToken is called before client creation.
-	// Let's check main.go flow.
 	_ = run(args, io.Discard)
 
 	_, err := os.Stat(tokenFile)

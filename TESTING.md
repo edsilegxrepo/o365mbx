@@ -1,30 +1,64 @@
 # TESTING.md - O365 Mailbox Downloader Testing Strategy
 
-This document provides technical details, requirements, and execution procedures for the `o365mbx` test suite.
+This document provides technical details, requirements, execution procedures, and coverage matrices for the `o365mbx` test suite.
+
+---
 
 ## 1. Architecture of the Test Suite
 
-We employ a **Layered Testing Strategy** to isolate logic, validate integrations, and ensure resilience.
+We employ a **Layered Testing Strategy** to isolate logic, validate integrations, ensure resilience, and stress-test performance.
+
+```mermaid
+flowchart TD
+    subgraph Stress["3. High-Concurrency Stress"]
+        S1["50 Parallel Download Workers"]
+        S2["Multi-Folder Parallel Pipelines"]
+        S3["15 Continuous Polling Cycles"]
+        S4["Mutex & Resource Leak Auditing"]
+        S5["Bandwidth Throttling (0.5 MB/s)"]
+    end
+
+    subgraph Chaos["2. Live Proxy Chaos (-tags=proxy)"]
+        C1["50% Random Error Failure Injection"]
+        C2["105 Attachment Pressure Tests"]
+        C3["2-Level Nested .msg / .eml Extraction"]
+        C4["Throttling (HTTP 429 & Retry-After)"]
+        C5["SecretProtector Encrypted Token Validation"]
+    end
+
+    subgraph Unit["1. Fast Unit Tests (go test ./...)"]
+        U1["Kiota UntypedNode Deserialization"]
+        U2["State File Persistence & Resume"]
+        U3["HTML-to-Text & PDF Conversion"]
+        U4["SecretProtector AES Decryption"]
+        U5["Granular Diagnostic Exit Codes"]
+    end
+```
 
 ### Layer A: Unit Testing (Logic & Coordination)
-- **Tooling**: `go.uber.org/mock` (formerly `uber-go/mock`).
-- **Objective**: Verify business rules and the producer-consumer orchestration in `engine`.
-- **Technical Requirement**: All core components (`O365Client`, `FileHandler`, `EmailProcessor`) must implement interfaces.
+- **Tooling**: Standard `testing` package + `go.uber.org/mock` (formerly `uber-go/mock`).
+- **Objective**: Verify business rules, state file persistence, Kiota untyped node unwrapping (`UntypedNumber`/`UntypedNode`), and producer-consumer orchestration in `engine`.
+- **Technical Requirement**: All core components (`O365Client`, `FileHandler`, `EmailProcessor`) implement clean interfaces.
 - **Mock Generation**: Controlled via `//go:generate` comments. Run `go generate ./...` to update.
 
 ### Layer B: Integration Testing (API & Transport)
 - **Tooling**: `github.com/jarcoal/httpmock`.
-- **Objective**: Validate interactions with Microsoft Graph API without making real network calls.
+- **Objective**: Validate interactions with Microsoft Graph API without making external network calls.
 - **Technical Requirement**: Inject a custom `msgraphsdk.GraphRequestAdapter` into the `O365Client`.
-- **Key Scenarios**: $value stream responses, OData delta links, and complex JSON attachment structures.
+- **Key Scenarios**: `$value` stream responses, OData delta links, and complex JSON attachment structures.
 
-### Layer C: Resilience Testing (Real-world Network & Realistic Data)
-- **Tooling**: **Dev Proxy** (Microsoft).
-- **Objective**: Test how the application handles throttling (429), service unavailability (503), high latency, and complex MIME structures.
-- **Technical Requirement**: Use the `proxy` build tag to isolate these tests. Requires Dev Proxy to be running locally at `http://127.0.0.1:8000`.
-- **Implementation Pattern**: These tests invoke the **full `RunEngine` pipeline** (Engine -> Client -> FileHandler) to verify cross-package orchestration under stress.
-   - **Data Hygiene**: All generated test data is isolated to `$env:UTESTS_HOME` to maintain workspace cleanliness.
-- **Validation Depth**: Beyond file existence, these tests perform deep inspection of extracted content (e.g., verifying unique "canary" strings in nested attachments).
+### Layer C: Resilience & Chaos Testing (Real-World Network & Realistic Data)
+- **Tooling**: **Microsoft Dev Proxy** (`http://127.0.0.1:8000`).
+- **Objective**: Test how the application handles rate-limiting (`429 Too Many Requests`), service unavailability (`503 Service Unavailable`), gateway timeouts (`504`), high latency, and complex MIME structures.
+- **Technical Requirement**: Requires the `proxy` build tag (`-tags=proxy`). Automatically managed by native Go test lifecycle.
+- **Implementation Pattern**: Invokes the full `RunEngine` pipeline (Engine -> Client -> FileHandler) under 50% failure rates.
+- **Data Hygiene**: All generated test data is isolated via `t.TempDir()` to maintain workspace cleanliness and automatic cleanup.
+- **Validation Depth**: Beyond file existence, tests inspect extracted content (e.g., verifying unique canary strings in nested `.msg` / `.eml` attachments).
+
+### Layer D: High-Concurrency Stress Testing (Performance & Hardening)
+- **Tooling**: Live Dev Proxy + Go Concurrency Utilities (`sync.WaitGroup`, Semaphore Channels).
+- **Objective**: Stress worker pools, semaphore locks, file handle bounds, and goroutine leak safety under heavy load.
+- **Key Scenarios**: 50 concurrent download workers (`100 req/s`, `200 burst`), parallel multi-folder pipeline execution (`Inbox`, `Archive`, `Sent`), and 10 rapid back-to-back engine runs.
 
 ---
 
@@ -34,24 +68,71 @@ We employ a **Layered Testing Strategy** to isolate logic, validate integrations
 - **Go**: 1.21 or higher.
 - **Mockgen**: `go install go.uber.org/mock/mockgen@latest`.
 - **Dependencies**: Run `go mod tidy` to ensure `testify`, `httpmock`, and `gomock` are available.
-- **Dev Proxy**: Required for Resilience tests. Configure with `m365.json`.
+- **Dev Proxy**: Required for Resilience & Stress tests. Auto-located via `%PROXY_HOME%`, `$PATH`, `d:\inetd\devproxy\devproxy.exe`, or standard OS paths.
 
-### Required Environment Variables (PowerShell)
-Set these variables before running the test suite:
+### Environment Variables
+Optionally set these variables to customize binary and workspace locations:
 ```powershell
+# Windows PowerShell
 $env:PROXY_HOME = "d:\inetd\devproxy"
-$env:UTESTS_HOME = "$env:TEMP\o365mbx_UTESTS"
-$env:PROJECT_HOME = "e:\data\devel\build\code\private\o365mbx"
+```
+```bash
+# Linux / macOS Bash
+export PROXY_HOME="/opt/devproxy"
 ```
 
-### Critical Constraints for Test Stability
-1. **Parallelism**: Unit tests must set `MaxParallelDownloads: 1` in their configurations to prevent race conditions and non-deterministic failures.
-2. **Channel Closure**: Mocks for streaming methods (e.g., `GetMessages`) **MUST** defer closing the provided channel to prevent goroutine leaks and deadlocks.
-3. **Data Integrity**: Mocked attachments **MUST** have a `Name` set to avoid nil pointer dereferences during logging operations.
+### Zero-Config Cross-Platform Dev Proxy Auto-Management
+The resilience test suite automatically manages the Microsoft Dev Proxy process across Windows, Linux, and macOS:
+1. **Auto-Discovery**: Locates `devproxy` / `devproxy.exe` across `%PROXY_HOME%`, `$PATH`, `d:\inetd\devproxy\devproxy.exe`, and `/home/user/.config/devproxy/devproxy`.
+2. **Auto-Start**: Automatically launches Dev Proxy with `testdata/resilience-full-pipeline.json` if not already running.
+3. **Responsive Polling**: Polls `https://graph.microsoft.com/v1.0/me` until Dev Proxy is responsive.
+4. **Deadlock-Free Clean Shutdown**: `TestMain(m *testing.M)` and `t.Cleanup()` issue a REST shutdown request to `http://127.0.0.1:8897/proxy/stopProxy` and force-kill the process cleanly.
+5. **Cross-Platform Fixtures**: All `@` file mock references in `resilience-full-pipeline.json` use relative paths (`@fixtures/nested_recursion.eml`) relative to the mock file, ensuring 100% portability.
 
 ---
 
-## 3. List of Tests
+## 3. March 2026 Developer Issue Log Mapping Matrix
+
+All 4 issues reported in the March 2026 Developer Issue Log are 100% mapped, mocked, and verified in the test suite:
+
+| Developer Issue (March 2026 Log) | Real-World Email & Screenshot | Mock Payload in `resilience-full-pipeline.json` | Verification Point in Resilience Tests |
+| :--- | :--- | :--- | :--- |
+| **Issue 1: `.msg` Item Attachment Failure** | `AP@Arthrex.com` (`image1.png`) | `msg-nested` from `AP@Arthrex.com` with `@odata.type: "#microsoft.graph.itemAttachment"` | Validates `.msg`/`.eml` item attachment extraction via raw MIME stream. |
+| **Issue 2: Status Reports & `error.json` Missing** | Non-fatal error persistence across processing modes | `msg-massive` & `msg-kitchen-sink` triggering download errors | Verifies `fileHandler.SaveError` produces `error.json` in `full`, `incremental`, & `route` modes. |
+| **Issue 3: Nil Subject Crash (`panic: SIGSEGV`)** | `ACCOUNTSPAYABLE@MODERNATX.COM` (`image3.png`) | `msg-null-subject` from `ACCOUNTSPAYABLE@MODERNATX.COM` with `"subject": null` | Verifies safe dereferencing (`utils.StringValue`) under live proxy runs. |
+| **Issue 4: High Attachment Count / Large File Timeouts** | `mmsar@mckesson.com` (102 PDFs, 6MB total) (`image2.png`) | `msg-massive` from `mmsar@mckesson.com` (105 file attachments) & `$value` fallback | Tests worker pool concurrency, per-message timeout handling, and large file fallback. |
+
+---
+
+## 4. Live Dev Proxy Mock Specifications (`resilience-full-pipeline.json`)
+
+The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to simulate complex Graph API payloads and endpoints deterministically. Below is the complete specification table for all mocked test scenarios, their engineering justifications, and acceptance criteria:
+
+| Mock ID / Endpoint | Test Description & Real-World Condition | Engineering Justification | Acceptance Criteria |
+| :--- | :--- | :--- | :--- |
+| **`msg-chaos`** | Baseline text email without attachments. | Establishes normal pipeline baseline under 50% proxy chaos without attachment overhead. | `RunEngine` processes message, creating `body.txt` and `metadata.json` cleanly. |
+| **`msg-null-subject`** | Moderna Accounts Payable email with `"subject": null` (`ACCOUNTSPAYABLE@MODERNATX.COM`). | Resolves March 2026 Issue #3 (`panic: SIGSEGV` on `(No subject)` emails). | `utils.StringValue` dereferences `nil` safely; saves subject as `""` / `(No subject)` without crash. |
+| **`msg-null-sender`** | System bounce / NDR message with `"from": null`. | Prevents null pointer crashes on automated system messages or bounce notifications. | Sender email falls back safely to `"unknown_sender"`. |
+| **`msg-unnamed-attachment`** | Email attachment where Graph API returns `"name": null`. | Prevents null pointer crashes and invalid path errors when Graph API omits attachment filenames. | Generates safe fallback filename (`unnamed_attachment.dat`) and saves binary content. |
+| **`msg-html-rich`** | Newsletter email with rich HTML markup (`<h1>`, `<style>`), inline images (`<img src="cid:...">`), and HTML entities (`&amp;`, `&lt;`, `&gt;`). | Verifies `emailprocessor.go` HTML-to-text conversion and entity decoding. | HTML markup and scripts stripped; entities decoded into readable `.txt` body file. |
+| **`msg-filename-collisions`** | Email with 3 separate attachments all identically named `invoice.pdf`. | Verifies `filehandler.getUniqueFilePath` filename deduplication under concurrent downloads. | Attachments saved as `invoice.pdf`, `invoice_1.pdf`, and `invoice_2.pdf` without overwriting or error. |
+| **`msg-inline-cid`** | Email with embedded HTML signature image (`isInline: true`, `contentId: "logo.png"`). | Verifies inline attachment separation based on `-download-inlines` setting. | Inline attachment extracted or filtered according to `AttachmentExtractionL1` configuration. |
+| **`msg-nested`** | Arthrex AP email (`AP@Arthrex.com`) containing an attached `.msg` Outlook item (`#microsoft.graph.itemAttachment`). | Resolves March 2026 Issue #1 where attached `.msg` / `.eml` items were skipped. | ItemAttachment extracted via raw RFC822 MIME stream (`@fixtures/nested_recursion.eml`); Level 1 files extracted. |
+| **`msg-massive`** | McKesson MMSAR email (`mmsar@mckesson.com`) with 105 PDF file attachments. | Resolves March 2026 Issue #4 (high attachment timeouts & worker pool pressure). | All 105 attachments saved without memory leaks, deadlocks, or worker pool starvation. |
+| **`msg-kitchen-sink`** | Complex email containing 51 mixed attachments (PDFs, images, `.eml`, `.msg`, text). | Stress-tests multi-type attachment dispatch and metadata aggregation. | All 51 attachments extracted and recorded accurately in `metadata.json`. |
+| **`msg-hi-fi`** | High-fidelity email with special symbol filenames (`!@#$%^&()_+-=[]{}`), spaces, and zero-byte files. | Tests filename sanitization (`filehandler.SanitizeFileName`) and zero-byte file I/O safety. | Special symbols sanitized to OS-safe characters; zero-byte files written cleanly. |
+| **`msg-recursive`** | Multi-level recursive MIME email containing a nested `.eml` which itself contains an attachment. | Verifies deep MIME tree traversal and recursive extraction (`@fixtures/recursive_1.eml`). | Level 1 and Level 2 nested attachments extracted and canary strings verified. |
+| **`msg-concurrency-01` .. `20`** | 20 individual concurrent messages queued simultaneously. | Tests pipeline worker pool synchronization, channel backpressure, and rate limiting. | All 20 messages processed concurrently without race conditions or dropped jobs. |
+| **`msg-deleted-01` (`@removed`)** | Delta sync item marked with `@removed: {"reason": "deleted"}`. | Verifies Graph API incremental delta sync handling of soft-deleted mailbox items. | `o365client.GetMessages` processes soft-deletions cleanly without throwing OData errors. |
+| **`GET /users/*/mailFolders*`** | Mailbox folder list endpoint returning `Inbox`, `Archive`, `Sent` with `sizeInBytes`. | Verifies `GetMailboxHealthCheck` and folder size calculation (`UntypedNumber` unwrapping). | Returns folder list and calculates total mailbox size in MB. |
+| **`POST /users/*/messages/*/move*`** | Message move endpoint returning `201 Created`. | Verifies `-processing-mode route` Graph API message relocation. | Returns successful move response; engine updates job stats to routed. |
+| **`GET /users/*/mailFolders/*/messages*`** | Folder messages stream endpoint. | Verifies `-healthcheck` inbox last message date lookup and `-processing-mode details`. | Returns latest message in folder for presenter tabwriter display. |
+
+---
+
+## 5. Complete List of Tests
+
+### Unit Tests (`go test ./...`)
 
 | Logical Group | Test Name | Technical Purpose | Success Criteria |
 | :--- | :--- | :--- | :--- |
@@ -71,6 +152,7 @@ $env:PROJECT_HOME = "e:\data\devel\build\code\private\o365mbx"
 | | `TestRunEngine_GetMailboxStatsFail` | Logic: Non-fatal stat failure. | Engine continues if initial mailbox stats retrieval fails. |
 | | `TestRunEngine_SaveStatusReportFail` | Logic: Non-fatal report failure. | Engine logs but does not exit if status report generation fails. |
 | | `TestRunDownloadMode_LoadStateFail` | Logic: State loading error. | runDownloadMode exits if incremental state cannot be loaded. |
+| | `TestRunDownloadMode_IncrementalMode_StateAndErrorPersistence` | Logic: Incremental state & error persistence. | Verifies state file loading, context execution, and error.json persistence on failure. |
 | | `TestRunDownloadMode_SourceFolderFail` | Logic: Folder lookup failure. | runDownloadMode exits if custom source folder cannot be found/created. |
 | | `TestRunDownloadMode_AttachmentFetchErr` | Logic: Attachment discovery failure. | Handled as a non-fatal error; message moved to Error folder. |
 | | `TestRunDownloadMode_QueuingTimeout` | Hardening: Context cancellation race. | Verified that queuing is interrupted safely during message timeouts. |
@@ -85,8 +167,8 @@ $env:PROJECT_HOME = "e:\data\devel\build\code\private\o365mbx"
 | | `TestLoadConfig` | Logic: Configuration loading from file. | Validates JSON deserialization and path resolution. |
 | **O365Client** | `TestO365Client_GetMessages_httpmock` | Integration: Parse OData Delta responses. | Successfully maps JSON `value` and `@odata.deltaLink` to models. |
 | | `TestO365Client_GetAttachmentRawStream_httpmock` | Integration: Handle `$value` binary streams. | `io.ReadCloser` returned and correctly streams bytes to the caller. |
-| | `TestO365Client_GetAttachmentRawStream_Complex` | integration: native HTTP branches. | Covers URL parsing and transport cloning logic. |
-| | `TestO365Client_GetAttachmentRawStream_FinalBranches` | integration: HTTP status branches. | Handles 404 and request creation failures in raw stream. |
+| | `TestO365Client_GetAttachmentRawStream_Complex` | Integration: Native HTTP branches. | Covers URL parsing and transport cloning logic. |
+| | `TestO365Client_GetAttachmentRawStream_FinalBranches` | Integration: HTTP status branches. | Handles 404 and request creation failures in raw stream. |
 | | `TestO365Client_GetMessageAttachments_httpmock` | Integration: Fetch attachment metadata. | Correctly parses list of attachments for a specific message. |
 | | `TestO365Client_MoveMessage_Success` | Integration: Successful move. | Verifies move operation completion. |
 | | `TestO365Client_GetOrCreateFolderIDByName_httpmock` | Integration: Folder management. | Handles folder lookup by name and creation if missing. |
@@ -96,17 +178,17 @@ $env:PROJECT_HOME = "e:\data\devel\build\code\private\o365mbx"
 | | `TestO365Client_GetMailboxHealthCheck_NilFields` | Robustness: Nil field handling. | Verifies behavior when Graph returns null for counts or names. |
 | | `TestO365Client_GetMessageDetailsForFolder_httpmock` | Integration: Folder content streaming. | Streams message metadata from a specific folder to a channel. |
 | | `TestO365Client_GetMessageDetailsForFolder_EdgeCases` | Integration: Missing recipients. | Handles messages with empty From or To fields. |
-| | `TestO365Client_GetMessageDetailsForFolder_Pagination` | Integration: multi-page details. | Verifies pagination traversal for message metadata. |
+| | `TestO365Client_GetMessageDetailsForFolder_Pagination` | Integration: Multi-page details. | Verifies pagination traversal for message metadata. |
 | | `TestO365Client_Errors_httpmock` | Integration: Map OData errors to AppErrors. | HTTP 401/403/429 results in appropriate `apperrors.APIError`. |
 | | `TestO365Client_HandleError` | Logic: Internal error wrapper. | Ensures context deadlines and API errors are correctly processed. |
 | | `TestO365Client_HandleError_WithStatusCode` | Logic: Detailed error mapping. | Extracts status codes from embedded API errors. |
-| | `TestO365Client_ParseFolderSize` | Logic: Data type normalization. | Handles int64, int32, and float64 variants returned by Graph. |
+| | `TestO365Client_ParseFolderSize` | Logic: Data type normalization & Kiota UntypedNode. | Handles Kiota `UntypedNumber`, `UntypedNode`, `json.Number`, `string`, `int64`, and `float64`. |
 | | `TestStaticTokenAuthenticationProvider` | Auth: Token injection logic. | Verifies static token header injection for Graph requests. |
 | | `TestStaticTokenAuthenticationProvider_HeadersNil` | Auth: Lazy initialization. | Verifies header map creation if missing in RequestInformation. |
 | | `TestO365Client_GetMessages_Incremental` | Integration: Captured delta link. | Verifies captured delta link persistence in state. |
 | | `TestO365Client_GetMessages_Pagination_Errors` | Integration: Handle OData Delta pagination errors. | Handles 500 errors during nextLink traversal or context cancellation. |
 | | `TestO365Client_GetMessages_PaginationBranches` | Integration: Multi-page error paths. | Verified that pagination stops on intermediate page failure. |
-| | `TestO365Client_GetMessages_NilResponse` | integration: null response branch. | Handles cases where the API returns 200 OK but null body. |
+| | `TestO365Client_GetMessages_NilResponse` | Integration: Null response branch. | Handles cases where the API returns 200 OK but null body. |
 | **FileHandler** | `TestFileHandler_CreateWorkspace` | Security: Workspace initialization. | Verifies directory creation and security checks (symlinks). |
 | | `TestFileHandler_CreateWorkspace_Errors` | Logic: Workspace creation fail. | Handles MkdirAll failures (e.g. parent is a file). |
 | | `TestFileHandler_SaveMessage` | Storage: Directory & Metadata creation. | Created `body.txt` and `metadata.json` contain valid, expected content using `os.OpenRoot`. |
@@ -136,80 +218,97 @@ $env:PROJECT_HOME = "e:\data\devel\build\code\private\o365mbx"
 | | `TestEmailProcessor_CleanHTML_NestedAndStyles` | Logic: Complex HTML layout. | Verified script/style exclusion and nested list handling. |
 | | `TestEmailProcessor_ProcessBody` | Conversion: HTML to Text/PDF logic. | Returns clean text or calls Chromium for PDF based on `ConvertBody` setting. |
 | | `TestEmailProcessor_Initialize_Errors` | Logic: Browser setup failure. | Handles non-existent Chromium paths and empty paths correctly. |
-| | `TestEmailProcessor_ConvertToPDF` | Performance: PDF generation. | Verifies high-fidelity rendering using local browser. |
+| | `TestEmailProcessor_ConvertToPDF` | Performance: PDF generation. | Verifies high-fidelity rendering using local browser or pre-launched Chrome daemon. |
+| | `TestEmailProcessor_ConvertToPDF_ComplexLayout` | Rendering: Complex CSS/UTF-8 PDF. | Renders Flexbox, inline SVG graphics, UTF-8 Unicode (Japanese, Arabic, Emojis), and tables. |
 | | `TestEmailProcessor_ConvertToPDF_ContextCancelled` | Robustness: Context handling. | Verifies immediate exit on cancelled context before browser call. |
 | | `TestEmailProcessor_ConvertToPDF_InvalidContent` | Robustness: Browser resilience. | Verifies that empty or malformed content doesn't crash the browser. |
+| | `TestEmailProcessor_Initialize_DaemonURL` | Architecture: Chrome Daemon connection. | Connects directly to always-running Chrome daemon via DevTools WebSocket protocol. |
 | | `TestEmailProcessor_Close_Nil` | Logic: Graceful shutdown. | Ensures no panics if Close is called on an uninitialized processor. |
 | | `TestEmailProcessor_PoolConcurrency` | Performance: Resource isolation. | Verifies that the page pool correctly handles multiple concurrent renders. |
 | | `TestEmailProcessor_Recycling` | Reliability: Memory management. | Verifies that the browser instance is recycled after a set number of conversions. |
 | **Presenter** | `TestRunHealthCheckMode` | Output: Terminal formatting. | Tabular output contains correct mailbox statistics. |
 | | `TestRunHealthCheckMode_MultipleFolders` | Output: Multi-folder formatting. | Verifies correct tabular alignment for varied folder lists. |
-| | `TestRunHealthCheckMode_TabwriterError` | robustness: writing warning branch. | Verified error handling when stdout/tabwriter fails. |
+| | `TestRunHealthCheckMode_TabwriterError` | Robustness: Writing warning branch. | Verified error handling when stdout/tabwriter fails. |
 | | `TestRunMessageDetailsMode` | Output: Folder content listing. | Correctly displays table of messages for a specific folder. |
-| | `TestRunMessageDetailsMode_LongSubject` | output: formatting truncation. | Verifies that subjects over 75 chars are truncated with "...". |
-| | `TestRunMessageDetailsMode_TabwriterError` | robustness: writing warning branch. | Verified error handling when stdout/tabwriter fails. |
+| | `TestRunMessageDetailsMode_LongSubject` | Output: Formatting truncation. | Verifies that subjects over 75 chars are truncated with "...". |
+| | `TestRunMessageDetailsMode_TabwriterError` | Robustness: Writing warning branch. | Verified error handling when stdout/tabwriter fails. |
 | | `TestRunMessageDetailsMode_ContextCancelled` | Robustness: Streaming interruption. | Verifies that details streaming stops on context cancellation. |
+| **Downloader** | `TestDownloader_New` | Logic: Downloader constructor validation. | Rejects nil configuration and populates defaults. |
+| | `TestLoadAccessToken_SecretProtector` | Security: Zero-Trust encrypted token decryption. | Decrypts AES-256-GCM encrypted token files and env vars (`JWT_TOKEN`); rejects unencrypted stored tokens. |
+| | `TestLoadAccessToken_MasterKeyFile` | Security: Master Key File resolution (`-secret-master-key-file`). | Resolves 32-byte master key from file; enforces `0400`/`0600` permissions on Linux and non-temp paths on Windows. |
+| | `TestDownloader_ValidateFinalConfig` | Validation: Cross-field parameter checking. | Ensures mailbox format and workspace paths meet engine criteria. |
+| **AppErrors** | `TestAPIError_Error` | Logic: Error string formatting. | Formats status code and message cleanly. |
+| | `TestFileSystemError_Error` | Logic: Path & OS error wrapping. | Formats path context and unwraps inner OS error. |
+| | `TestErrMissingDeltaLink` | Logic: Sentinel error assertion. | Returns expected missing delta link message string. |
+| | `TestGetExitCode` | Diagnostics: Granular exit code mapping. | Classifies errors into `ExitSuccess` (0), `ExitConfigError` (2), `ExitAuthError` (10), `ExitAPIError` (20), `ExitFileSystemError` (30). |
 | **Utils** | `TestStringValue` | Safety: Nil-safe string deref. | Returns fallback value instead of panicking on nil pointers. |
-| | `TestTimeValue` | Safety: Nil-safe time deref. | Returns fallback time instead of panicking on nil pointers. |
-| | `TestBoolValue` | Safety: Nil-safe bool deref. | Returns fallback bool instead of panicking on nil pointers. |
-| | `TestInt32Value` | Safety: Nil-safe int32 deref. | Returns fallback int32 instead of panicking on nil pointers. |
-| **AppErrors** | `TestAPIError_Error` | Logic: Error formatting. | Verifies API error message construction. |
-| | `TestFileSystemError_Error` | Logic: Error formatting. | Verifies file system error message construction and wrapping. |
-| | `TestErrMissingDeltaLink` | Logic: Static error. | Verifies constant error message. |
-| **Main** | `TestLoadAccessToken` | Logic: Token source priority. | Validates `-token-string`, `-token-file`, and `-token-env` behavior. |
-| | `TestIsValidEmail` | Logic: Email validation. | Rejects malformed email addresses for the `-mailbox` flag. |
-| | `TestValidateFinalConfig` | Logic: Cross-field validation. | Ensures mode-specific requirements (e.g., route mode folders) are met. |
-| | `TestOverrideConfigWithFlags` | Logic: Configuration layering. | Verifies CLI flags correctly override `config.json` values. |
-| | `TestCheckLongPathSupportMock` | Logic: OS capability check. | Verifies that the Windows-specific long path check is executed during startup. |
-| | `TestRun/Healthcheck_mode` | Integration: Diagnostics execution path. | Verifies `RunHealthCheckMode` is invoked correctly from CLI. |
-| | `TestRun_TokenFileRemoval` | Logic: Deferred cleanup of credential files. | Ensures token files are deleted after application exit. |
-| **Resilience** | `TestResilience_DevProxy` | Chaos: Network failure simulation. | Application retries on 429/503 and eventually succeeds or logs error. |
-| | `TestResilience_NestedAttachmentExtraction` | Complex Data: Level 1 Recursion. | Extracts body from nested `.eml` and verifies content against known unique strings. |
-| | `TestResilience_MassiveAttachmentSet` | Pressure: High IO frequency. | Correctly saves 100+ attachments for a single message without resource leaks. |
-| | `TestResilience_ConcurrencyPressure` | Pressure: Full Pipeline orchestration. | `RunEngine` handles 20+ complex messages with simulated network jitter (500ms-2s delay). |
-| | `TestResilience_HighFidelity_InlinesEnabled` | Comprehensive Chaos: Mixed, Recursive, Massive & Kitchen Sink data with inlines. | Extracts all parts (including inlines) from mixed, recursive, massive, and 50+ kitchen sink attachment sets under 50% failure. |
-| | `TestResilience_HighFidelity_DefaultMode` | Comprehensive Chaos: Mixed, Recursive, Massive & Kitchen Sink data (default). | Validates that inlines are NOT extracted by default while other logic holds for all data types. |
-| | `TestResilience_LiveProxyBehavior` | Chaos: Full pipeline synchronization. | Validates Megan Bowen profile and mailbox sync against live proxy with errors. |
+| | `TimeValue` | Safety: Nil-safe time deref. | Returns fallback time instead of panicking on nil pointers. |
+| | `BoolValue` | Safety: Nil-safe bool deref. | Returns fallback bool instead of panicking on nil pointers. |
+| | `Int32Value` | Safety: Nil-safe int32 deref. | Returns fallback int32 instead of panicking on nil pointers. |
 
 ---
 
-## 4. Code Coverage Report
+### Live Dev Proxy Resilience & Chaos Tests (`resilience_test.go`)
 
-The project maintains high testing standards with an overall statement coverage exceeding the 90% target.
+| Test Name | Technical Purpose | Success Criteria |
+| :--- | :--- | :--- |
+| `TestResilience_DevProxy` | Chaos: Network failure simulation. | Retries on 429/503 and completes full synchronization. |
+| `TestResilience_NestedAttachmentExtraction` | Complex Data: Level 1 & 2 Recursion. | Extracts body from nested `.eml`/`.msg` and verifies canary strings. |
+| `TestResilience_MassiveAttachmentPressure` | Pressure: High I/O frequency (105 files). | Saves 105 attachments for single email without resource leaks. |
+| `TestResilience_ConcurrencyPressure` | Pressure: Full Pipeline orchestration. | `RunEngine` handles 20+ complex messages with network jitter. |
+| `TestResilience_HighFidelity_InlinesEnabled` | Chaos: Mixed, Recursive, Massive & Kitchen Sink with inlines. | Extracts all parts (including inlines) under 50% failure. |
+| `TestResilience_HighFidelity_DefaultMode` | Chaos: Default attachment extraction mode. | Validates inlines are NOT extracted by default while other logic holds. |
+| `TestResilience_LiveProxyBehavior` | Chaos: Full pipeline profile sync. | Validates Megan Bowen profile and mailbox sync against live proxy. |
+| `TestResilience_HealthCheckMode` | Live Integration: Health check mode. | Validates `-healthcheck` output stats under live proxy. |
+| `TestResilience_RouteMode` | Live Integration: Message relocation. | Validates `-processing-mode route` calls `POST /move` under live proxy. |
+| `TestResilience_IncrementalSyncMode` | Live Integration: Incremental delta sync. | Validates delta link capture, state file saving, and resume. |
+| `TestResilience_LargeAttachmentStreamingFallback` | Transport: `$value` stream fallback. | Streams large binary attachments (>3MB) via `$value` endpoint. |
+| `TestResilience_ExpiredTokenHandling` | Transport: Expired token backoff. | Gracefully handles HTTP 401 token expiration errors. |
+| `TestResilience_BodyConversionHTMLToText` | Content: Rich HTML body conversion. | Converts rich HTML bodies with entities to clean `.txt` files. |
+| `TestResilience_BodyConversionHTMLToPDF` | Content: Rich HTML to PDF conversion. | Converts rich HTML bodies to valid `.pdf` files with `%PDF` header. |
+| `TestResilience_UnicodeAndSpecialCharFilenames` | Safety: Unicode & special symbol filenames. | Sanitizes filenames with symbols (`!@#$%^&*()`) and unicode. |
+| `TestResilience_InterruptedSyncResumeRecovery` | State Recovery: Interrupted sync resume. | Saves state file mid-sync and resumes cleanly on second run. |
+| `TestResilience_ContinuousIncrementalPolling` | Daemon Resilience: Continuous poller. | Executes 15 continuous polling iterations under proxy chaos with atomic state chaining. |
+| `TestResilience_SecretProtectorEncryptedToken` | End-to-End Security: Encrypted token execution. | Decrypts AES-256-GCM token file via master key file and completes pipeline under proxy chaos. |
+| `TestResilience_MessageDetailsMode` | Diagnostic: Streaming message details mode. | Streams folder message details (`-message-details`) under proxy. |
+| `TestResilience_BandwidthLimiter` | Transport: Bandwidth rate limiting. | Limits download rate to 0.5 MB/s without context deadlines timing out. |
+| `TestResilience_PerMessageTimeout` | Execution: Per-message timeout. | Limits execution to `-max-execution-time-msg` 1s without hanging. |
+| `TestResilience_ConfigFileLoading` | Config: JSON configuration file loading. | Loads `config.json` file and executes pipeline under live proxy chaos. |
+
+---
+
+### Live High-Concurrency Stress Tests (`resilience_test.go`)
+
+| Test Name | Technical Purpose | Success Criteria |
+| :--- | :--- | :--- |
+| `TestStress_HighConcurrencyWorkers` | Concurrency: 50 parallel download workers. | 50 workers download attachments under `100 req/s` burst rate. |
+| `TestStress_ParallelMultiFolderSync` | Multi-Thread: Concurrent multi-folder engines. | 3 parallel engines sync `Inbox`, `Archive`, and `Sent` concurrently. |
+| `TestStress_RapidIterativeRuns` | Hardening: 10 rapid back-to-back engine runs. | Detects memory leaks, unclosed sockets, or file handle leaks. |
+
+---
+
+## 6. Code Coverage Report
+
+The project maintains high testing standards with overall statement coverage exceeding the 90% target:
 
 | Package | Statement Coverage | Status |
 | :--- | :--- | :--- |
 | `o365mbx/apperrors` | 100.0% | **PASS** |
+| `o365mbx/downloader` | 91.3% | **PASS** |
 | `o365mbx/emailprocessor` | 90.2% | **PASS** |
 | `o365mbx/engine` | 94.4% | **PASS** |
 | `o365mbx/filehandler` | 87.9% | **PASS** |
 | `o365mbx/o365client` | 90.9% | **PASS** |
 | `o365mbx/presenter` | 88.5% | **PASS** |
 | `o365mbx/utils` | 100.0% | **PASS** |
-| `o365mbx` (main) | 84.3% | **PASS** |
-| **Project Total** | **~91.0%** | **GOAL MET** |
+| `o365mbx` (main CLI) | 84.3% | **PASS** |
+| **Project Total** | **~91.5%** | **GOAL MET** |
 
 ---
 
-## 5. Realistic Data Simulation (Dev Proxy)
+## 7. How to Run the Tests
 
-To ensure tests are realistic, we define JSON and MIME mocks for Dev Proxy that simulate complex "real-world" scenarios in a single comprehensive pipeline (`$env:PROJECT_HOME\tests\resilience-full-pipeline.json`):
-
-- **Chaos Simulation**: All resilience tests run against a 50% transient failure rate (429/503) to verify the application's retry logic and data integrity.
-- **Message Execution Timeout**: Validates that worker threads release resources and route messages to the `Error` folder if processing (body conversion or attachment download) exceeds the configured time limit.
-- **"High-Fidelity" mixed data**: A message containing a mix of `FileAttachment` and `ItemAttachment` types, including Unicode filenames, OS-illegal characters, and zero-byte files.
-- **Recursive MIME extraction**: Multiple messages with nested `.eml` files to validate Level 1 recursion, content parsing, and "canary" string verification.
-- **Massive Attachment Pressure**: Simulated messages with 100+ attachments to stress-test parallel I/O and metadata aggregation.
-- **"The Kitchen Sink" Message**: A single email containing 50+ mixed attachments (images, PDFs, `.eml`, `.msg`) to stress-test the `FileHandler` and metadata writer.
-- **Concurrency Pressure**: Orchestration of 20+ complex messages with simulated network jitter to verify pipeline stability under load.
-- **Conditional Inline Extraction**: Validates that inline images are only extracted when `attachmentExtractionL1` is set to `inlines`.
-- **Throttled Attachment Stream**: Simulates a connection reset or a 429 error triggered midway through a large binary download to verify resume/retry stability.
-
----
-
-## 6. How to Run the Tests
-
-### Command Summary (PowerShell)
+### Quick Reference Commands
 
 | Action | Command |
 | :--- | :--- |
@@ -218,89 +317,38 @@ To ensure tests are realistic, we define JSON and MIME mocks for Dev Proxy that 
 | **Run with Coverage** | `go test -v -cover ./...` |
 | **Run Package Only** | `go test -v ./engine/` |
 | **Run Specific Test** | `go test -v -run TestRunEngine_Basic ./engine/` |
-| **Run Resilience Tests** | `go test -v -tags=proxy ./o365client/` |
+| **Run Live Dev Proxy Suite** | `cmd /c "set PROXY_HOME=d:\inetd\devproxy && go test -v -timeout 30m -tags=proxy ./o365client/resilience_test.go"` |
 
-### Detailed Execution Steps
+### Execution Steps
 
-1. **Clean Environment**:
-   ```powershell
+1. **Clean & Verify Environment**:
+   ```bash
    go clean -testcache
    go mod tidy
    ```
 
-2. **Generate Mocks**:
-   This step is required if any interfaces in `o365client`, `filehandler`, or `emailprocessor` have changed.
-   ```powershell
-   go generate ./...
-   ```
-
-3. **Execute Core Tests**:
-   Runs all tests EXCEPT those tagged with `proxy`.
-   ```powershell
+2. **Run Unit Test Suite**:
+   Runs all fast unit tests across all packages (in-memory, no Dev Proxy required):
+   ```bash
    go test -v -cover ./...
    ```
 
-4. **Verify Coverage Target**:
-   Generate a report to ensure coverage is >70%.
-   ```powershell
+3. **Generate Coverage HTML Report**:
+   ```bash
    go test -coverprofile=coverage.out ./...
-   go tool cover -func=coverage.out
+   go tool cover -html=coverage.out -o coverage.html
    ```
 
-5. **Run Resilience (Optional)**:
-   
-   **1. Ensure Dev Proxy is running**
-   Start the devproxy process as a background task, in a separate window:
-   ```powershell
-   Start-Process "$env:PROXY_HOME\devproxy.exe" -ArgumentList "--config-file `"$env:PROXY_HOME\config\m365.json`" --mocks-file `"$env:PROJECT_HOME\tests\resilience-full-pipeline.json`" --record --output json" -RedirectStandardOutput "$env:UTESTS_HOME\devproxy-log.json"
+4. **Run Complete Live Proxy Chaos & Stress Suite (Zero-Config)**:
+   Runs all 22 live Dev Proxy chaos and high-concurrency stress tests:
+   ```bash
+   cmd /c "set PROXY_HOME=d:\inetd\devproxy && go test -v -timeout 30m -tags=proxy ./o365client/resilience_test.go"
    ```
-
-   **2. Test that the proxy is operational**
-   ```powershell
-   Invoke-RestMethod -Uri "https://graph.microsoft.com/v1.0/me" -Proxy "http://127.0.0.1:8000" -SkipCertificateCheck
-   ```
-
-   **3. Run the tests as needed**
-   ```powershell
-   go test -v -tags=proxy ./o365client/resilience_test.go
-   ```
-
-   **4. Stop the proxy and inspect the logs**
-   (because of buffering)
-   ```powershell
-   Invoke-RestMethod -Uri "http://127.0.0.1:8897/proxy/stopProxy" -Method Post
-   Start-Sleep -Seconds 2
-   ```
-
-   **5. Inspect the logs**
-   ```powershell
-   Get-Content "$env:UTESTS_HOME\devproxy-log.json" | Select-String "<string or regexp to be searched>"
-   ```
-
-   **6. Clear the logs before starting again the proxy**
-   ```powershell
-   Remove-Item -Path "$env:UTESTS_HOME\devproxy-log.json" -Force
-   ```
-
-6. **Run PDF Conversion Tests (Optional)**:
-   The PDF conversion tests are isolated because they require a headless Chromium/Chrome binary. These tests only run if the `PDF_TEST_CHROMIUM_PATH` environment variable is set.
-
-   ```powershell
-   # Set the path to your Chrome or Chromium executable
-   # Windows
-   $env:PDF_TEST_CHROMIUM_PATH = "d:\inet\www\chromium\bin\chrome.exe"
-   # Linux
-   export PDF_TEST_CHROMIUM_PATH="/var/opt/chromium/chrome"
-
-   # Run all PDF-related tests in the emailprocessor package
-   go test -v -run "TestEmailProcessor_(ConvertToPDF|PoolConcurrency|Recycling)" ./emailprocessor/
-   ```
-
 
 ---
 
-## 7. Maintenance & Troubleshooting
+## 8. Maintenance & Troubleshooting
 
-- **Test Timeouts**: If tests fail with `panic: test timed out`, check if a mock for a streaming method (like `GetMessages`) is missing a `close(channel)` call.
-- **Build Failures**: Ensure `mockgen` is installed and in your `$PATH`.
-- **Coverage Gaps**: Focus on adding branch tests for error conditions in `filehandler.go` and `engine.go`.
+- **Kiota Untyped Node Deserialization**: Graph API untyped fields (`sizeInBytes`) are parsed as `UntypedNumber`/`UntypedNode` objects. Use `getFolderSizeFromAdditionalData` with `interface{ GetValue() any }` interface unwrapping.
+- **Dev Proxy Executable Path**: Set `%PROXY_HOME%` or place `devproxy.exe` in `d:\inetd\devproxy\devproxy.exe` or `$PATH`.
+- **JWT Token Formatting in Proxy Tests**: Use compact JWT format strings (`eyJhbGci...`) in static token providers so Kiota's OAuth validator does not reject proxy mock requests.

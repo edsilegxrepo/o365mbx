@@ -13,6 +13,7 @@
 package utils
 
 import (
+	"strings"
 	"time"
 )
 
@@ -46,4 +47,37 @@ func Int32Value(i *int32, defaultValue int32) int32 {
 		return defaultValue
 	}
 	return *i
+}
+
+// SanitizeControlCharacters strips non-printable ASCII control characters (\x00-\x1F, \x7F)
+// and ANSI escape codes to prevent terminal output garbling or injection vulnerabilities.
+func SanitizeControlCharacters(s string) string {
+	var builder strings.Builder
+	builder.Grow(len(s))
+
+	inEscapeSeq := false
+	for i := 0; i < len(s); i++ {
+		b := s[i]
+
+		// Handle ANSI escape sequences (\x1b[...)
+		if b == 0x1b {
+			inEscapeSeq = true
+			continue
+		}
+		if inEscapeSeq {
+			if (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '~' {
+				inEscapeSeq = false
+			}
+			continue
+		}
+
+		// Strip non-printable ASCII control characters (\x00-\x1F and \x7F) except tab (\t), newline (\n), and carriage return (\r)
+		if (b < 0x20 && b != '\t' && b != '\n' && b != '\r') || b == 0x7f {
+			continue
+		}
+
+		builder.WriteByte(b)
+	}
+
+	return builder.String()
 }

@@ -17,8 +17,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"o365mbx/o365client"
 	"text/tabwriter"
+
+	"o365mbx/o365client"
+	"o365mbx/utils"
 
 	log "github.com/sirupsen/logrus"
 )
@@ -92,9 +94,9 @@ func RunMessageDetailsMode(ctx context.Context, client o365client.O365ClientInte
 
 	// Loop will end when detailsChan is closed by the client
 	for msg := range detailsChan {
-		from := msg.From
-		to := msg.To
-		subject := msg.Subject
+		from := utils.SanitizeControlCharacters(msg.From)
+		to := utils.SanitizeControlCharacters(msg.To)
+		subject := utils.SanitizeControlCharacters(msg.Subject)
 		if len(subject) > 75 {
 			subject = subject[:72] + "..."
 		}

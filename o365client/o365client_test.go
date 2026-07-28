@@ -6,6 +6,7 @@ package o365client
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math/rand"
@@ -554,6 +555,12 @@ func TestO365Client_GetAttachmentRawStream_Errors(t *testing.T) {
 	assert.Error(t, err)
 }
 
+type mockUntypedNode struct {
+	val any
+}
+
+func (m mockUntypedNode) GetValue() any { return m.val }
+
 func TestO365Client_ParseFolderSize(t *testing.T) {
 	testCases := []struct {
 		name string
@@ -567,7 +574,13 @@ func TestO365Client_ParseFolderSize(t *testing.T) {
 		{"float64 literal", float64(64.0), 64},
 		{"float64 pointer", Ptr(float64(32.0)), 32},
 		{"nil pointer", (*int64)(nil), 0},
-		{"unsupported type", "string", 0},
+		{"string number", "102400", 102400},
+		{"string float", "5120.5", 5120},
+		{"string pointer", Ptr("81920"), 81920},
+		{"json.Number", json.Number("2048"), 2048},
+		{"Kiota UntypedNode float64 pointer", mockUntypedNode{val: Ptr(float64(4096.0))}, 4096},
+		{"Kiota UntypedNode string", mockUntypedNode{val: "8192"}, 8192},
+		{"unsupported non-number string", "invalid-number", 0},
 	}
 
 	for _, tc := range testCases {

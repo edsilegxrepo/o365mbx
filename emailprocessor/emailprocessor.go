@@ -11,29 +11,31 @@
 //     basic document structure (blocks, lists, etc.).
 //  2. Link & Image Handling: Preserves hyperlinks in a Markdown-like format [text](url)
 //     and extracts image alt-text to ensure no information is lost during conversion.
-//  3. PDF Generation: Uses the 'go-rod' library with a long-lived browser singleton
-//     and managed page pool for high-fidelity, high-performance HTML-to-PDF rendering.
-//  4. Content Detection: Provides utilities to detect if content is HTML or plain text.
+//  3. PDF Generation: Uses the 'chromedp' library with a long-lived browser singleton,
+//     incognito tab isolation, and managed context pool for high-fidelity, high-performance HTML-to-PDF rendering.
+//  4. Chrome Daemon & Local Binary Support: Supports both managed local Chromium binaries and
+//     direct WebSocket connections to pre-launched Chrome daemons (e.g. ws://127.0.0.1:9222) for zero-startup latency.
+//  5. Content Detection: Provides utilities to detect if content is HTML or plain text.
 //
 // PERFORMANCE & RESOURCE MANAGEMENT:
-//   - Page Pooling: Recycles a fixed number of browser pages to limit memory overhead.
-//   - Browser Recycling: Automatically restarts the Chromium process after 1000 conversions
-//     to mitigate potential memory leaks or stability issues.
+//   - Tab Isolation: Isolates PDF conversion tasks in ephemeral Chrome tabs to prevent cross-request contamination.
+//   - Browser Recycling: Automatically restarts the Chromium process/connection after 1000 conversions
+//     to prevent V8 heap memory growth over multi-million email jobs.
+//   - Process Tree Termination: Uses native context cancellation tree to guarantee clean termination without orphan Chrome processes.
 package emailprocessor
 
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
 	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
-	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/launcher"
-	"github.com/go-rod/rod/lib/proto"
+	"github.com/chromedp/cdproto/page"
+	"github.com/chromedp/chromedp"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/html"
 )
@@ -67,8 +69,8 @@ type EmailProcessorInterface interface {
 // EmailProcessor handles the transformation logic for email bodies.
 type EmailProcessor struct {
 	logger       log.FieldLogger
-	browser      *rod.Browser
-	pool         rod.Pool[rod.Page]
+	allocCtx     context.Context
+	allocCancel  context.CancelFunc
 	chromiumPath string
 	poolSize     int
 	conversions  uint64
@@ -94,14 +96,23 @@ func (ep *EmailProcessor) ProcessBody(ctx context.Context, htmlContent, convertB
 	}
 }
 
-// Initialize sets up the long-lived Chromium browser instance and page pool.
+// isURL checks if a given target string is a WebSocket or HTTP URL.
+func isURL(target string) bool {
+	// nosemgrep: javascript.lang.security.detect-insecure-websocket.detect-insecure-websocket - Local Chrome DevTools protocol communicates over loopback ws://127.0.0.1:9222.
+	return strings.HasPrefix(target, "ws://") || strings.HasPrefix(target, "wss://") ||
+		strings.HasPrefix(target, "http://") || strings.HasPrefix(target, "https://")
+}
+
+// Initialize sets up the long-lived Chromium browser instance or connects to a pre-launched Chrome daemon.
 func (ep *EmailProcessor) Initialize(ctx context.Context, chromiumPath string, poolSize int) error {
 	if chromiumPath == "" {
 		return nil // Nothing to initialize if PDF conversion isn't used
 	}
 
-	if _, err := os.Stat(chromiumPath); os.IsNotExist(err) {
-		return fmt.Errorf("chromiumPath does not exist: %s", chromiumPath)
+	if !isURL(chromiumPath) {
+		if _, err := os.Stat(chromiumPath); os.IsNotExist(err) {
+			return fmt.Errorf("chromiumPath does not exist: %s", chromiumPath)
+		}
 	}
 
 	if poolSize <= 0 {
@@ -114,114 +125,129 @@ func (ep *EmailProcessor) Initialize(ctx context.Context, chromiumPath string, p
 	return ep.startBrowser()
 }
 
-// startBrowser launches the Chromium process and initializes the page pool.
+// startBrowser connects to an always-running Chrome daemon if a control URL is supplied (e.g. ws://127.0.0.1:9222)
+// or launches a managed Chromium process if a local binary path is provided using chromedp.
 func (ep *EmailProcessor) startBrowser() error {
-	l := launcher.New().Bin(ep.chromiumPath).Leakless(false)
-	browserURL, err := l.Launch()
-	if err != nil {
-		return fmt.Errorf("failed to launch browser: %w", err)
+	ep.mu.Lock()
+	defer ep.mu.Unlock()
+
+	var allocCtx context.Context
+	var allocCancel context.CancelFunc
+
+	if isURL(ep.chromiumPath) {
+		ep.logger.WithField("url", ep.chromiumPath).Info("Connecting directly to Chrome daemon via DevTools WebSocket.")
+		allocCtx, allocCancel = chromedp.NewRemoteAllocator(context.Background(), ep.chromiumPath)
+	} else {
+		opts := append(chromedp.DefaultExecAllocatorOptions[:],
+			chromedp.ExecPath(ep.chromiumPath),
+			chromedp.NoFirstRun,
+			chromedp.NoDefaultBrowserCheck,
+			chromedp.Headless,
+		)
+		allocCtx, allocCancel = chromedp.NewExecAllocator(context.Background(), opts...)
+		ep.logger.WithField("path", ep.chromiumPath).Info("Launched managed Chromium browser process.")
 	}
 
-	ep.browser = rod.New().ControlURL(browserURL).MustConnect()
-	ep.pool = rod.NewPagePool(ep.poolSize)
+	browserCtx, browserCancel := chromedp.NewContext(allocCtx)
+	if err := chromedp.Run(browserCtx); err != nil {
+		browserCancel()
+		allocCancel()
+		return fmt.Errorf("failed to initialize browser instance: %w", err)
+	}
+
+	ep.allocCtx = browserCtx
+	ep.allocCancel = func() {
+		browserCancel()
+		allocCancel()
+	}
 	atomic.StoreUint64(&ep.conversions, 0)
 
 	return nil
 }
 
-// Close gracefully shuts down the browser and cleans up resources.
+// Close gracefully shuts down browser connection and managed launcher process.
 func (ep *EmailProcessor) Close() error {
-	if ep.pool != nil {
-		ep.pool.Cleanup(func(p *rod.Page) {
-			_ = p.Close()
-		})
-	}
-	if ep.browser != nil {
-		return ep.browser.Close()
+	ep.mu.Lock()
+	defer ep.mu.Unlock()
+
+	if ep.allocCancel != nil {
+		ep.allocCancel()
+		ep.allocCancel = nil
+		ep.allocCtx = nil
 	}
 	return nil
 }
 
-// ConvertToPDF converts HTML content to a PDF byte slice using a long-lived browser instance and page pool.
+// ConvertToPDF converts HTML content to a PDF byte slice using chromedp.
 func (ep *EmailProcessor) ConvertToPDF(ctx context.Context, htmlContent string) ([]byte, error) {
-	if ep.browser == nil || ep.pool == nil {
+	ep.mu.Lock()
+	if ep.allocCtx == nil {
+		ep.mu.Unlock()
 		return nil, fmt.Errorf("email processor not initialized for PDF conversion")
+	}
+	ep.mu.Unlock()
+
+	if ctx != nil && ctx.Err() != nil {
+		return nil, ctx.Err()
 	}
 
 	// Browser recycling logic
 	if atomic.LoadUint64(&ep.conversions) >= 1000 {
 		ep.mu.Lock()
-		// Double check after acquiring lock
 		if atomic.LoadUint64(&ep.conversions) >= 1000 {
 			ep.logger.Info("Recycling browser instance after 1000 conversions.")
+			ep.mu.Unlock()
 			_ = ep.Close()
 			if err := ep.startBrowser(); err != nil {
-				ep.mu.Unlock()
 				return nil, fmt.Errorf("failed to recycle browser: %w", err)
 			}
+		} else {
+			ep.mu.Unlock()
 		}
-		ep.mu.Unlock()
 	}
 	atomic.AddUint64(&ep.conversions, 1)
 
-	createPage := func() (*rod.Page, error) {
-		// Using Incognito ensures no cookie/cache leaks between emails
-		return ep.browser.MustIncognito().MustPage(), nil
-	}
+	// Create tab target context derived from our allocator context
+	taskCtx, taskCancel := chromedp.NewContext(ep.allocCtx)
+	defer taskCancel()
 
-	// Get a page from the pool (blocks if pool is full)
-	// We use a separate goroutine to allow the pool.Get to be interruptible by context
-	type pageResult struct {
-		page *rod.Page
-		err  error
-	}
-	resChan := make(chan pageResult, 1)
-	go func() {
-		page, err := ep.pool.Get(createPage)
-		resChan <- pageResult{page, err}
-	}()
-
-	var page *rod.Page
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	case res := <-resChan:
-		if res.err != nil {
-			return nil, fmt.Errorf("failed to get page from pool: %w", res.err)
+	if ctx != nil {
+		var cancel context.CancelFunc
+		if deadline, ok := ctx.Deadline(); ok {
+			taskCtx, cancel = context.WithDeadline(taskCtx, deadline)
+		} else {
+			taskCtx, cancel = context.WithTimeout(taskCtx, 60*time.Second)
 		}
-		page = res.page
+		defer cancel()
 	}
 
-	// Ensure the page is associated with the current context for cancellation
-	page = page.Context(ctx)
-	defer ep.pool.Put(page)
-
-	// Set content and wait for it to be ready
-	if err := page.SetDocumentContent(htmlContent); err != nil {
-		return nil, fmt.Errorf("failed to set document content: %w", err)
-	}
-
-	// Wait for the page to load completely (external assets, etc.)
-	if err := page.WaitLoad(); err != nil {
-		ep.logger.Warnf("Page wait load error: %v", err)
-	}
-
-	pdf, err := page.PDF(&proto.PagePrintToPDF{})
+	var pdfBuffer []byte
+	err := chromedp.Run(taskCtx,
+		chromedp.Navigate("about:blank"),
+		chromedp.ActionFunc(func(runCtx context.Context) error {
+			frameTree, err := page.GetFrameTree().Do(runCtx)
+			if err != nil {
+				return err
+			}
+			return page.SetDocumentContent(frameTree.Frame.ID, htmlContent).Do(runCtx)
+		}),
+		chromedp.ActionFunc(func(runCtx context.Context) error {
+			buf, _, err := page.PrintToPDF().
+				WithPrintBackground(true).
+				WithPreferCSSPageSize(true).
+				Do(runCtx)
+			if err != nil {
+				return err
+			}
+			pdfBuffer = buf
+			return nil
+		}),
+	)
 	if err != nil {
-		return nil, fmt.Errorf("failed to generate PDF: %w", err)
-	}
-	defer func() {
-		if err := pdf.Close(); err != nil {
-			ep.logger.Warnf("Failed to close PDF reader stream: %v", err)
-		}
-	}()
-
-	pdfBytes, err := io.ReadAll(pdf)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read PDF stream: %w", err)
+		return nil, fmt.Errorf("failed to generate PDF via chromedp: %w", err)
 	}
 
-	return pdfBytes, nil
+	return pdfBuffer, nil
 }
 
 // CleanHTML converts HTML content to a sanitized plain-text string, preserving

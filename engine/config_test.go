@@ -188,7 +188,7 @@ func TestConfig_ValidateChromiumPath(t *testing.T) {
 	defer func() { _ = os.Remove(tmpFile.Name()) }()
 
 	// Make it executable
-	err = tmpFile.Chmod(0755)
+	err = tmpFile.Chmod(0o755)
 	assert.NoError(t, err)
 	_ = tmpFile.Close()
 

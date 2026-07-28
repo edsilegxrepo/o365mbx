@@ -15,7 +15,44 @@ package apperrors
 import (
 	"errors"
 	"fmt"
+	"strings"
 )
+
+// Exit code constants for process diagnostics and automated execution pipelines.
+const (
+	ExitSuccess         = 0
+	ExitConfigError     = 2
+	ExitAuthError       = 10
+	ExitAPIError        = 20
+	ExitFileSystemError = 30
+	ExitInterrupted     = 130
+)
+
+// GetExitCode inspects an error and returns the corresponding diagnostic exit code.
+func GetExitCode(err error) int {
+	if err == nil {
+		return ExitSuccess
+	}
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		if apiErr.StatusCode == 401 || apiErr.StatusCode == 403 {
+			return ExitAuthError
+		}
+		return ExitAPIError
+	}
+	var fsErr *FileSystemError
+	if errors.As(err, &fsErr) {
+		return ExitFileSystemError
+	}
+	errStr := strings.ToLower(err.Error())
+	if strings.Contains(errStr, "token") || strings.Contains(errStr, "auth") || strings.Contains(errStr, "unauthorized") {
+		return ExitAuthError
+	}
+	if strings.Contains(errStr, "config") || strings.Contains(errStr, "invalid") || strings.Contains(errStr, "flag") {
+		return ExitConfigError
+	}
+	return 1
+}
 
 // ErrMissingDeltaLink is returned when an incremental run completes without a delta link.
 var ErrMissingDeltaLink = errors.New("API did not provide a delta link on the final page of an incremental sync")
