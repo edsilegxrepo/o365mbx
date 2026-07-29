@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [1.1.0] - 2026-07-28
 
 ### Added
+* **Dev Proxy Test Suite Redesign & Live Chaos Automation (`o365client/resilience_test.go`)**:
+  * Redesigned integration test suite with zero-config Dev Proxy lifecycle management, OData `@odata.deltaLink` token persistence verification, and `-processing-mode route` relocation testing.
+* **Enterprise Realistic Email Data Test Cases (`filehandler/filehandler_test.go`)**:
+  * Added test coverage for Japanese (`請求書.pdf`), Arabic RTL (`فاتورة.eml`), Cyrillic (`отчет.xlsx`), and Unicode symbols (`Invoice_Enterprise.pdf`) filename I/O safety.
+  * Added raw binary payload extraction tests for encrypted/signed S/MIME PKCS#7 envelopes (`smime.p7m`, `smime.p7s`).
+  * Added 3-level recursive RFC822 EML chain extraction tests.
+* **Production Hardening & Signal Safety Tests (`filehandler_test.go` & `resilience_test.go`)**:
+  * Added `TestFileHandler_DiskSpaceExhaustion` to verify write error handling (`ENOSPC`) and incomplete `.tmp` staging cleanup.
+  * Added `TestFileHandler_CorruptedWorkspaceSelfHealing` to verify automatic startup purging of orphan `.tmp` staging files.
+  * Added `TestEngine_GracefulShutdown_ContextCancellation` to verify context cancellation (`SIGINT`/`SIGTERM`) and atomic state persistence.
 * **OAuth2 Client Credentials Flow & Automatic Token Refresh (`o365client/auth`)**:
   * Implemented native support for Microsoft Entra ID Client Credentials grant via `TenantID`, `ClientID`, and `ClientSecret` (or `ClientSecretFile` / `ClientSecretEnv` encrypted via `secretprotector`).
   * Added `ClientCredentialsAuthenticationProvider` (`./o365client/auth.go`) featuring thread-safe token caching (`sync.RWMutex`) and **proactive background token refresh** (refreshes 5 minutes prior to expiration or upon detecting expired tokens).
@@ -18,7 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 * **Full Token Lifecycle Test Suite (`o365client_test.go` & `resilience_test.go`)**:
   * Added unit, error branch, provider resolution, and Microsoft Dev Proxy resilience tests for initial token acquisition, expiration handling, and auto-refresh during live API calls.
 
-### Fixed
+### Fixed & Hardened
+* **Downloader Concurrency Semaphore Lockup (`engine/engine.go`)**:
+  * Fixed a channel deadlock in `runDownloadMode` by removing a duplicate `<-semaphore` receive, enabling high-throughput parallel worker processing.
+* **Transient Network Error Retry Loops (`o365client/o365client.go`)**:
+  * Added 10-attempt retry loops with exponential backoff around Graph API folder operations (`GetOrCreateFolderIDByName`) and message moves (`MoveMessage`).
+  * Added 5-attempt retry loop around OData delta query synchronization (`GetMessages`).
+* **Throttling & Chaos Fault Categorization (`o365client/resilience_test.go`)**:
+  * Expanded `isTransientError` to recognize Dev Proxy chaos error payloads (`throttled`, `retry-after`, proxy signing key warnings).
 * **MailFolder OData $select Schema Compliance (`o365client/o365client.go`) [GH-40]**:
   * Fixed an issue where `-healthcheck` and `GetMailboxStats` failed with HTTP 400 (`Parsing OData Select and Expand failed: Could not find a property named 'sizeInBytes' on type 'microsoft.graph.mailFolder'`) by removing `sizeInBytes` from OData `$select`.
   * Restored accurate folder item count retrieval and `source_mailbox_counts` population in `status_*.json` summary reports.

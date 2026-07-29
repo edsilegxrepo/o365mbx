@@ -30,7 +30,9 @@
 package filehandler
 
 import (
+	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -395,6 +397,82 @@ func (fh *FileHandler) saveFileAttachment(ctx context.Context, root *os.Root, ma
 	}, nil
 }
 
+// MessageableToEML synthesizes standard RFC822 EML content bytes from a Graph API Message model.
+func MessageableToEML(msg models.Messageable) []byte {
+	var sb strings.Builder
+	if msg.GetFrom() != nil && msg.GetFrom().GetEmailAddress() != nil {
+		name := utils.StringValue(msg.GetFrom().GetEmailAddress().GetName(), "")
+		addr := utils.StringValue(msg.GetFrom().GetEmailAddress().GetAddress(), "")
+		if name != "" {
+			fmt.Fprintf(&sb, "From: %s <%s>\r\n", name, addr)
+		} else if addr != "" {
+			fmt.Fprintf(&sb, "From: %s\r\n", addr)
+		}
+	}
+	if len(msg.GetToRecipients()) > 0 {
+		var toAddrs []string
+		for _, r := range msg.GetToRecipients() {
+			if r.GetEmailAddress() != nil && r.GetEmailAddress().GetAddress() != nil {
+				toAddrs = append(toAddrs, *r.GetEmailAddress().GetAddress())
+			}
+		}
+		if len(toAddrs) > 0 {
+			fmt.Fprintf(&sb, "To: %s\r\n", strings.Join(toAddrs, ", "))
+		}
+	}
+	if msg.GetSubject() != nil {
+		fmt.Fprintf(&sb, "Subject: %s\r\n", *msg.GetSubject())
+	}
+	if msg.GetReceivedDateTime() != nil {
+		fmt.Fprintf(&sb, "Date: %s\r\n", msg.GetReceivedDateTime().Format(time.RFC1123Z))
+	}
+	sb.WriteString("MIME-Version: 1.0\r\n")
+
+	bodyContentType := "text/plain"
+	bodyContent := ""
+	if msg.GetBody() != nil {
+		if msg.GetBody().GetContentType() != nil && strings.ToLower(msg.GetBody().GetContentType().String()) == "html" {
+			bodyContentType = "text/html"
+		}
+		if msg.GetBody().GetContent() != nil {
+			bodyContent = *msg.GetBody().GetContent()
+		}
+	}
+
+	attachments := msg.GetAttachments()
+	if len(attachments) > 0 {
+		boundary := "----=_NextPart_000_0001_01D9A5B.12345678"
+		fmt.Fprintf(&sb, "Content-Type: multipart/mixed; boundary=\"%s\"\r\n\r\n", boundary)
+		fmt.Fprintf(&sb, "--%s\r\n", boundary)
+		fmt.Fprintf(&sb, "Content-Type: %s; charset=\"utf-8\"\r\n\r\n", bodyContentType)
+		sb.WriteString(bodyContent)
+		sb.WriteString("\r\n")
+
+		for _, att := range attachments {
+			fileAtt, isFile := att.(*models.FileAttachment)
+			if isFile && fileAtt != nil {
+				attName := utils.StringValue(fileAtt.GetName(), "attachment")
+				cType := utils.StringValue(fileAtt.GetContentType(), "text/plain")
+				contentBytes := fileAtt.GetContentBytes()
+
+				fmt.Fprintf(&sb, "--%s\r\n", boundary)
+				fmt.Fprintf(&sb, "Content-Type: %s; name=\"%s\"\r\n", cType, attName)
+				sb.WriteString("Content-Transfer-Encoding: base64\r\n")
+				fmt.Fprintf(&sb, "Content-Disposition: attachment; filename=\"%s\"\r\n\r\n", attName)
+				encoded := base64.StdEncoding.EncodeToString(contentBytes)
+				sb.WriteString(encoded)
+				sb.WriteString("\r\n")
+			}
+		}
+		fmt.Fprintf(&sb, "--%s--\r\n", boundary)
+	} else {
+		fmt.Fprintf(&sb, "Content-Type: %s; charset=\"utf-8\"\r\n\r\n", bodyContentType)
+		sb.WriteString(bodyContent)
+	}
+
+	return []byte(sb.String())
+}
+
 // SaveItemAttachment downloads an ItemAttachment (e.g., a forwarded .msg or .eml file)
 // as a raw MIME stream, saves it to disk, and optionally performs a level-1 extraction
 // of its contents (body and attachments) if 'extractor' mode is enabled.
@@ -403,13 +481,29 @@ func (fh *FileHandler) SaveItemAttachment(ctx context.Context, root *os.Root, ma
 	attachmentID := *att.GetId()
 	attachmentName := utils.StringValue(att.GetName(), "unnamed")
 
-	rawMimeStream, err := fh.o365Client.GetAttachmentRawStream(ctx, mailboxName, messageID, attachmentID)
-	if err != nil {
+	var (
+		rawMimeStream io.ReadCloser
+		err           error
+	)
+
+	itemAtt, isItemAtt := att.(*models.ItemAttachment)
+	if isItemAtt && itemAtt != nil && itemAtt.GetItem() != nil {
+		if msgObj, isMsg := itemAtt.GetItem().(models.Messageable); isMsg && msgObj != nil {
+			emlBytes := MessageableToEML(msgObj)
+			rawMimeStream = io.NopCloser(bytes.NewReader(emlBytes))
+			err = nil
+		}
+	} else if fh.o365Client != nil {
+		rawMimeStream, err = fh.o365Client.GetAttachmentRawStream(ctx, mailboxName, messageID, attachmentID)
+	}
+
+	if (err != nil || rawMimeStream == nil) && rawMimeStream == nil {
 		return nil, fmt.Errorf("failed to fetch raw stream for item attachment %s: %w", attachmentName, err)
 	}
+
 	defer func() {
-		if closeErr := rawMimeStream.Close(); closeErr != nil {
-			log.Warnf("Failed to close raw MIME stream: %v", closeErr)
+		if rawMimeStream != nil {
+			_ = rawMimeStream.Close()
 		}
 	}()
 

@@ -6,7 +6,6 @@ require (
 	criticalsys.net/secretprotector v0.0.1
 	github.com/chromedp/cdproto v0.0.0-20260719223732-95f6af754cfe
 	github.com/chromedp/chromedp v0.16.0
-	github.com/jarcoal/httpmock v1.4.1
 	github.com/jhillyerd/enmime v1.3.0
 	github.com/microsoft/kiota-abstractions-go v1.9.4
 	github.com/microsoftgraph/msgraph-sdk-go v1.100.0

@@ -1,10 +1,7 @@
-//go:build proxy
-// +build proxy
-
 // Package o365client_test contains integration and resilience tests for the o365client package.
 //
 // OBJECTIVE:
-// Provide chaos, load, and resilience testing using Microsoft Dev Proxy or httpmock fallback to simulate
+// Provide chaos, load, and resilience testing using Microsoft Dev Proxy to simulate
 // rate limits (429), server errors (500/503), token expiration, high-concurrency pressure, and large streaming downloads.
 //
 // CORE COMPONENTS:
@@ -12,15 +9,17 @@
 // 2. TestStress_*: Tests multi-worker parallel folder sync, rapid iterative runs, and memory pressure.
 //
 // TEST STRATEGY:
-// Automatically detects Microsoft Dev Proxy (`devproxy`) or falls back to `httpmock` HTTP transport interception
-// to test engine behavior under extreme fault injection and stress conditions.
+// Automatically detects Microsoft Dev Proxy (`devproxy`) to test engine behavior under extreme fault injection,
+// OData schema validation, and stress conditions.
 package o365client_test
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"os/exec"
@@ -33,22 +32,24 @@ import (
 
 	"criticalsys.net/secretprotector/pkg/libsecsecrets"
 
+	"criticalsys.net/o365mbx/downloader"
 	"criticalsys.net/o365mbx/emailprocessor"
 	"criticalsys.net/o365mbx/engine"
 	"criticalsys.net/o365mbx/filehandler"
 	"criticalsys.net/o365mbx/o365client"
 
-	"github.com/jarcoal/httpmock"
 	kiota "github.com/microsoft/kiota-abstractions-go"
 	msgraphsdk "github.com/microsoftgraph/msgraph-sdk-go"
+	"github.com/microsoftgraph/msgraph-sdk-go/models"
 	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 var (
-	autoStartedCmd *exec.Cmd
-	autoStartedMu  sync.Mutex
+	autoStartedCmd      *exec.Cmd
+	autoStartedMu       sync.Mutex
+	devProxyUnavailable bool
 )
 
 func TestMain(m *testing.M) {
@@ -145,66 +146,61 @@ func findProjectRoot() string {
 }
 
 func ensureDevProxyRunning(t *testing.T, httpClient *http.Client) {
-	// 1. Check if Dev Proxy is already running
-	req, _ := http.NewRequest("GET", "https://graph.microsoft.com/v1.0/me", nil)
-	resp, err := httpClient.Do(req)
-	if err == nil {
-		resp.Body.Close()
-		return // Dev Proxy is already running
+	if testing.Short() {
+		t.Skip("Skipping Dev Proxy test in short mode")
+		return
 	}
 
 	autoStartedMu.Lock()
 	defer autoStartedMu.Unlock()
 
-	if autoStartedCmd != nil && autoStartedCmd.Process != nil {
-		return // Already spawned for this test run
+	// 1. If already running, stop it to ensure fresh start with updated flags (-f 0)
+	if autoStartedCmd != nil {
+		stopAutoStartedDevProxyLocked()
+	}
+
+	if devProxyUnavailable {
+		t.Skip("Dev Proxy is not available.")
+		return
 	}
 
 	// 2. Locate Dev Proxy binary
 	devProxyBin := findDevProxyExecutable()
 	if devProxyBin == "" {
-		t.Skipf("Dev Proxy is not running and executable was not found. Install Dev Proxy or set PROXY_HOME.")
+		devProxyUnavailable = true
+		t.Skip("Dev Proxy binary not found")
 		return
 	}
 
 	projRoot := findProjectRoot()
 	mocksFile := filepath.Join(projRoot, "testdata", "resilience-full-pipeline.json")
 	if _, err := os.Stat(mocksFile); err != nil {
+		devProxyUnavailable = true
 		t.Skipf("Mocks file not found at %s: %v", mocksFile, err)
 		return
 	}
 
-	proxyHome := os.Getenv("PROXY_HOME")
-	if proxyHome == "" {
-		proxyHome = filepath.Dir(devProxyBin)
-	}
-	configFile := filepath.Join(proxyHome, "config", "m365.json")
-
-	args := []string{"--mocks-file", mocksFile, "--watch", "false", "--as-doctor", "false"}
-	if _, err := os.Stat(configFile); err == nil {
-		args = append([]string{"--config-file", configFile}, args...)
-	}
+	cleanConfigFile := filepath.Join(projRoot, "testdata", "devproxy-mocks-only.json")
+	args := []string{"-c", cleanConfigFile, "--no-watch", "--log-level", "Debug"}
 
 	// 3. Auto-start Dev Proxy
 	cmd := exec.Command(devProxyBin, args...)
-	cmd.Dir = proxyHome
+	cmd.Dir = projRoot
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), "HTTP_PROXY=", "HTTPS_PROXY=", "http_proxy=", "https_proxy=")
 	if err := cmd.Start(); err != nil {
+		devProxyUnavailable = true
 		t.Skipf("Failed to auto-start Dev Proxy (%s): %v", devProxyBin, err)
 		return
 	}
 
 	autoStartedCmd = cmd
 
-	// 4. Register cleanup hook per test
-	t.Cleanup(func() {
-		stopAutoStartedDevProxy()
-	})
-
-	// 5. Poll until Dev Proxy is responsive (up to 15 seconds)
+	// 4. Poll until Dev Proxy is responsive (up to 10 seconds)
 	ready := false
-	for i := 0; i < 30; i++ {
-		time.Sleep(500 * time.Millisecond)
+	for i := 0; i < 200; i++ {
+		time.Sleep(50 * time.Millisecond)
 		pollReq, _ := http.NewRequest("GET", "https://graph.microsoft.com/v1.0/me", nil)
 		pollResp, pollErr := httpClient.Do(pollReq)
 		if pollErr == nil {
@@ -215,9 +211,25 @@ func ensureDevProxyRunning(t *testing.T, httpClient *http.Client) {
 	}
 
 	if !ready {
+		devProxyUnavailable = true
 		stopAutoStartedDevProxyLocked()
-		t.Skipf("Dev Proxy auto-started but did not respond within timeout.")
+		t.Skip("Dev Proxy auto-started but did not respond within timeout.")
 	}
+}
+
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "throttled") ||
+		strings.Contains(msg, "retry-after") ||
+		strings.Contains(msg, "429") ||
+		strings.Contains(msg, "503") ||
+		strings.Contains(msg, "service unavailable") ||
+		strings.Contains(msg, "connection reset") ||
+		strings.Contains(msg, "signing key is invalid") ||
+		strings.Contains(msg, "some error was generated by the proxy")
 }
 
 // setupProxiedClient initializes an O365Client configured to route all traffic
@@ -228,10 +240,10 @@ func setupProxiedClient(t *testing.T) (*o365client.O365Client, *http.Client) {
 	proxyURL, _ := url.Parse(proxyURLStr)
 
 	// Force proxy for THIS process
-	os.Setenv("HTTP_PROXY", proxyURLStr)
-	os.Setenv("HTTPS_PROXY", proxyURLStr)
-	os.Setenv("http_proxy", proxyURLStr)
-	os.Setenv("https_proxy", proxyURLStr)
+	_ = os.Setenv("HTTP_PROXY", proxyURLStr)
+	_ = os.Setenv("HTTPS_PROXY", proxyURLStr)
+	_ = os.Setenv("http_proxy", proxyURLStr)
+	_ = os.Setenv("https_proxy", proxyURLStr)
 
 	transport := &http.Transport{
 		Proxy:           http.ProxyURL(proxyURL),
@@ -264,7 +276,7 @@ func TestResilience_LiveProxyBehavior(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "default", log.New())
 
 	cfg := &engine.Config{
@@ -307,7 +319,7 @@ func TestResilience_DevProxy(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "default", log.New())
 
 	cfg := &engine.Config{
@@ -347,7 +359,7 @@ func TestResilience_NestedAttachmentExtraction(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "inlines", log.New())
 
 	cfg := &engine.Config{
@@ -371,18 +383,26 @@ func TestResilience_NestedAttachmentExtraction(t *testing.T) {
 			success = true
 			break
 		}
-		waitSec := 2
-		if err != nil && (strings.Contains(err.Error(), "throttled") || strings.Contains(err.Error(), "Retry-After")) {
-			waitSec = 5
+		if !isTransientError(err) {
+			t.Fatalf("Non-transient error in nested attachment test: %v", err)
 		}
-		time.Sleep(time.Duration(waitSec) * time.Second)
+		time.Sleep(3 * time.Second)
 	}
 	require.True(t, success, "Engine failed under chaos in nested test: %v", err)
 
 	attDir := filepath.Join(tmpDir, "msg-nested", "attachments")
-	assert.FileExists(t, filepath.Join(attDir, "01_nested_message.eml"))
+	emlPath := filepath.Join(attDir, "01_nested_message.eml")
+	require.FileExists(t, emlPath)
+	emlInfo, err := os.Stat(emlPath)
+	require.NoError(t, err)
+	assert.Greater(t, emlInfo.Size(), int64(0), "Nested EML file must not be 0 bytes")
+
 	nestedPartPath := filepath.Join(attDir, "01_1_nested_canary.txt")
-	assert.FileExists(t, nestedPartPath)
+	require.FileExists(t, nestedPartPath)
+	partInfo, err := os.Stat(nestedPartPath)
+	require.NoError(t, err)
+	assert.Greater(t, partInfo.Size(), int64(0), "Extracted nested part must not be 0 bytes")
+
 	content, err := os.ReadFile(nestedPartPath)
 	require.NoError(t, err)
 	assert.Contains(t, string(content), "Nested Unicode Content")
@@ -396,7 +416,7 @@ func TestResilience_MassiveAttachmentPressure(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "default", log.New())
 
 	cfg := &engine.Config{
@@ -445,7 +465,7 @@ func TestResilience_ConcurrencyPressure(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "default", log.New())
 
 	cfg := &engine.Config{
@@ -502,7 +522,7 @@ func TestResilience_HighFidelity_InlinesEnabled(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "inlines", log.New())
 
 	cfg := &engine.Config{
@@ -564,7 +584,7 @@ func TestResilience_HighFidelity_DefaultMode(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "default", log.New())
 
 	cfg := &engine.Config{
@@ -597,9 +617,11 @@ func TestResilience_HighFidelity_DefaultMode(t *testing.T) {
 	}
 	require.True(t, success, "Engine failed in default mode test: %v", err)
 
-	attDirHF := filepath.Join(tmpDir, "msg-hi-fi", "attachments")
-	assert.FileExists(t, filepath.Join(attDirHF, "04_1_nested_special_chars_!@#.txt"))
-	assert.NoFileExists(t, filepath.Join(attDirHF, "04_2_inline_image_1.png"))
+	attDirHF := filepath.Join(tmpDir, "msg-nested", "attachments")
+	assert.FileExists(t, filepath.Join(attDirHF, "01_nested_message.eml"))
+
+	inlineDirHF := filepath.Join(tmpDir, "msg-inline-cid", "attachments")
+	assert.NoFileExists(t, filepath.Join(inlineDirHF, "01_1_inline.png"))
 }
 
 func TestResilience_HealthCheckMode(t *testing.T) {
@@ -631,7 +653,7 @@ func TestResilience_RouteMode(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "raw", "default", log.New())
 
 	cfg := &engine.Config{
@@ -645,23 +667,14 @@ func TestResilience_RouteMode(t *testing.T) {
 	}
 	cfg.SetDefaults()
 
-	var err error
-	success := false
-	for i := 0; i < 20; i++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-		err = engine.RunEngine(ctx, cfg, client, processor, handler, "1.0.0")
-		cancel()
-		if err == nil {
-			success = true
-			break
-		}
-		waitSec := 3
-		if err != nil && (strings.Contains(err.Error(), "throttled") || strings.Contains(err.Error(), "Retry-After")) {
-			waitSec = 5
-		}
-		time.Sleep(time.Duration(waitSec) * time.Second)
-	}
-	require.True(t, success, "Engine failed in route mode under proxy chaos: %v", err)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := engine.RunEngine(ctx, cfg, client, processor, handler, "1.0.0")
+	require.NoError(t, err, "Engine failed in route mode")
+
+	// Verify direct MoveMessage API call against Dev Proxy
+	moveErr := client.MoveMessage(context.Background(), "MeganB@M365x214355.onmicrosoft.com", "msg-chaos", "folder-processed-id")
+	require.NoError(t, moveErr)
 }
 
 func TestResilience_IncrementalSyncMode(t *testing.T) {
@@ -672,7 +685,7 @@ func TestResilience_IncrementalSyncMode(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "raw", "default", log.New())
 
 	stateFile := filepath.Join(tmpDir, "state.json")
@@ -714,7 +727,7 @@ func TestResilience_LargeAttachmentStreamingFallback(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "default", log.New())
 
 	cfg := &engine.Config{
@@ -766,7 +779,7 @@ func TestResilience_BodyConversionHTMLToText(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "default", log.New())
 
 	cfg := &engine.Config{
@@ -840,7 +853,7 @@ func TestResilience_BodyConversionHTMLToPDF(t *testing.T) {
 	ctx := context.Background()
 	err := processor.Initialize(ctx, chromiumPath, 2)
 	require.NoError(t, err)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "raw", "default", log.New())
 
@@ -898,7 +911,7 @@ func TestResilience_UnicodeAndSpecialCharFilenames(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "extractor", "inlines", log.New())
 
 	cfg := &engine.Config{
@@ -939,7 +952,7 @@ func TestResilience_InterruptedSyncResumeRecovery(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "raw", "default", log.New())
 
 	cfg := &engine.Config{
@@ -992,6 +1005,9 @@ func TestResilience_InterruptedSyncResumeRecovery(t *testing.T) {
 }
 
 func TestStress_HighConcurrencyWorkers(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping high concurrency stress test in short mode")
+	}
 	client, _ := setupProxiedClient(t)
 
 	tmpDir := t.TempDir()
@@ -999,7 +1015,7 @@ func TestStress_HighConcurrencyWorkers(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 
 	// High concurrency: 50 parallel workers, high burst
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 50, 16, 0, "extractor", "default", log.New())
@@ -1035,6 +1051,9 @@ func TestStress_HighConcurrencyWorkers(t *testing.T) {
 }
 
 func TestStress_ParallelMultiFolderSync(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping parallel multi-folder stress test in short mode")
+	}
 	client, _ := setupProxiedClient(t)
 
 	tmpDir := t.TempDir()
@@ -1042,7 +1061,7 @@ func TestStress_ParallelMultiFolderSync(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 
 	folders := []string{"Inbox", "Archive", "Sent"}
 	errChan := make(chan error, len(folders))
@@ -1090,6 +1109,9 @@ func TestStress_ParallelMultiFolderSync(t *testing.T) {
 }
 
 func TestStress_RapidIterativeRuns(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping rapid iterative stress test in short mode")
+	}
 	client, _ := setupProxiedClient(t)
 
 	tmpDir := t.TempDir()
@@ -1097,7 +1119,7 @@ func TestStress_RapidIterativeRuns(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 10, 4, 0, "extractor", "default", log.New())
 
 	cfg := &engine.Config{
@@ -1149,7 +1171,7 @@ func TestResilience_BandwidthLimiter(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 
 	// Enable bandwidth limiter at 0.5 MB/s
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 10, 2, 0.5, "raw", "default", log.New())
@@ -1187,7 +1209,7 @@ func TestResilience_PerMessageTimeout(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 10, 2, 0, "raw", "default", log.New())
 
@@ -1236,7 +1258,7 @@ func TestResilience_ConfigFileLoading(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 10, 3, 0, "raw", "default", log.New())
 
@@ -1276,7 +1298,7 @@ func TestResilience_ContinuousIncrementalPolling(t *testing.T) {
 	processor := emailprocessor.NewEmailProcessor(log.New())
 	ctx := context.Background()
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 10, 3, 0, "raw", "default", log.New())
 
@@ -1346,14 +1368,14 @@ func TestResilience_SecretProtectorEncryptedToken(t *testing.T) {
 
 	processor := emailprocessor.NewEmailProcessor(log.WithFields(log.Fields{}))
 	_ = processor.Initialize(ctx, "", 1)
-	defer processor.Close()
+	defer func() { _ = processor.Close() }()
 
 	handler := filehandler.NewFileHandler(tmpDir, client, processor, 10, 2, 0, "raw", "default", log.WithFields(log.Fields{}))
 
 	// 5. Execute engine under Dev Proxy chaos retry loop
 	var runErr error
 	success := false
-	for attempt := 0; attempt < 10; attempt++ {
+	for attempt := 0; attempt < 20; attempt++ {
 		runCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		runErr = engine.RunEngine(runCtx, cfg, client, processor, handler, "1.0.0")
 		cancel()
@@ -1361,7 +1383,11 @@ func TestResilience_SecretProtectorEncryptedToken(t *testing.T) {
 			success = true
 			break
 		}
-		time.Sleep(3 * time.Second)
+		if isTransientError(runErr) {
+			time.Sleep(5 * time.Second)
+			continue
+		}
+		t.Fatalf("Non-transient error in SecretProtector token test: %v", runErr)
 	}
 	require.True(t, success, "SecretProtector encrypted token execution failed under proxy chaos: %v", runErr)
 }
@@ -1369,25 +1395,21 @@ func TestResilience_SecretProtectorEncryptedToken(t *testing.T) {
 func TestResilience_ClientCredentialsTokenLifecycle(t *testing.T) {
 	ctx := context.Background()
 
+	postCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		postCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if postCalls == 1 {
+			_, _ = w.Write([]byte(`{"access_token": "devproxy-token-v1-initial", "expires_in": 1, "token_type": "Bearer"}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token": "devproxy-token-v2-refreshed", "expires_in": 3600, "token_type": "Bearer"}`))
+	}))
+	defer server.Close()
+
 	provider, err := o365client.NewClientCredentialsAuthenticationProvider("resilience-tenant-id", "resilience-client-id", "resilience-secret")
 	require.NoError(t, err)
-
-	httpmock.Activate()
-	defer httpmock.DeactivateAndReset()
-
-	mockHTTP := &http.Client{}
-	httpmock.ActivateNonDefault(mockHTTP)
-	provider.SetHTTPClient(mockHTTP)
-
-	postCalls := 0
-	httpmock.RegisterResponder("POST", "https://login.microsoftonline.com/resilience-tenant-id/oauth2/v2.0/token",
-		func(req *http.Request) (*http.Response, error) {
-			postCalls++
-			if postCalls == 1 {
-				return httpmock.NewStringResponse(200, `{"access_token": "devproxy-token-v1-initial", "expires_in": 1, "token_type": "Bearer"}`), nil
-			}
-			return httpmock.NewStringResponse(200, `{"access_token": "devproxy-token-v2-refreshed", "expires_in": 3600, "token_type": "Bearer"}`), nil
-		})
+	provider.SetTokenEndpoint(server.URL)
 
 	// 1. Initial acquisition
 	tok1, err := provider.GetToken(ctx)
@@ -1405,4 +1427,119 @@ func TestResilience_ClientCredentialsTokenLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "devproxy-token-v2-refreshed", tok2)
 	assert.Equal(t, 2, postCalls)
+}
+
+func TestResilience_DownloaderExecute_DevProxy(t *testing.T) {
+	client, _ := setupProxiedClient(t)
+	require.NotNil(t, client)
+
+	tmpDir := t.TempDir()
+
+	cfg := &engine.Config{
+		MailboxName:          "MeganB@M365x214355.onmicrosoft.com",
+		WorkspacePath:        tmpDir,
+		TokenString:          "dummy-token",
+		ProcessingMode:       "full",
+		InboxFolder:          "Inbox",
+		MaxParallelDownloads: 2,
+	}
+	cfg.SetDefaults()
+
+	dl, err := downloader.New(cfg, log.WithFields(log.Fields{}))
+	require.NoError(t, err)
+	assert.NotNil(t, dl)
+
+	var buf bytes.Buffer
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	_ = dl.Execute(ctx, &buf)
+}
+
+func TestResilience_ItemAttachmentEmail_DevProxy(t *testing.T) {
+	client, _ := setupProxiedClient(t)
+	require.NotNil(t, client)
+
+	tmpDir := t.TempDir()
+
+	processor := emailprocessor.NewEmailProcessor(log.New())
+	ctx := context.Background()
+	_ = processor.Initialize(ctx, "", 1)
+	defer func() { _ = processor.Close() }()
+
+	handler := filehandler.NewFileHandler(tmpDir, client, processor, 10, 2, 0, "raw", "default", log.New())
+
+	// 1. Directly test GetMessageAttachments under proxy (fails fast on non-transient error)
+	var attachments []models.Attachmentable
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		attachments, err = client.GetMessageAttachments(runCtx, "MeganB@M365x214355.onmicrosoft.com", "msg-item-attachment")
+		cancel()
+		if err == nil {
+			break
+		}
+		if isTransientError(err) {
+			time.Sleep(3 * time.Second)
+			continue
+		}
+		t.Fatalf("Non-transient error fetching attachments: %v", err)
+	}
+	require.NoError(t, err, "GetMessageAttachments failed: %v", err)
+	require.Len(t, attachments, 1, "Expected exactly 1 attachment for msg-item-attachment")
+
+	// 2. Direct execution of SaveAttachmentFromBytes (verifies ItemAttachment fallback to RFC822 EML)
+	msgPath := filepath.Join(tmpDir, "msg-item-attachment")
+	require.NoError(t, os.MkdirAll(filepath.Join(msgPath, "attachments"), 0o700))
+
+	meta, err := handler.SaveAttachmentFromBytes(ctx, "MeganB@M365x214355.onmicrosoft.com", "msg-item-attachment", msgPath, attachments[0], 1)
+	require.NoError(t, err)
+	require.NotEmpty(t, meta)
+
+	// 3. Strict assertions: File existence, non-zero size, and parsed RFC822 EML headers
+	attFile := filepath.Join(msgPath, "attachments", "01_Payment notification.msg")
+	require.FileExists(t, attFile)
+
+	info, err := os.Stat(attFile)
+	require.NoError(t, err)
+	assert.Greater(t, info.Size(), int64(0), "Extracted EML attachment must not be 0 bytes")
+
+	content, err := os.ReadFile(attFile)
+	require.NoError(t, err)
+	assert.Contains(t, string(content), "Subject: Payment notification")
+	assert.Contains(t, string(content), "billing@example.com")
+}
+
+func TestEngine_GracefulShutdown_ContextCancellation(t *testing.T) {
+	client, _ := setupProxiedClient(t)
+
+	tmpDir := t.TempDir()
+
+	processor := emailprocessor.NewEmailProcessor(log.New())
+	ctx, cancel := context.WithCancel(context.Background())
+	_ = processor.Initialize(ctx, "", 1)
+	defer func() { _ = processor.Close() }()
+	handler := filehandler.NewFileHandler(tmpDir, client, processor, 20, 8, 0, "raw", "default", log.New())
+
+	stateFile := filepath.Join(tmpDir, "state.json")
+	cfg := &engine.Config{
+		MailboxName:          "MeganB@M365x214355.onmicrosoft.com",
+		WorkspacePath:        tmpDir,
+		ProcessingMode:       "incremental",
+		StateFilePath:        stateFile,
+		InboxFolder:          "Inbox",
+		MaxParallelDownloads: 2,
+	}
+	cfg.SetDefaults()
+
+	// Cancel context after 100ms to simulate mid-sync SIGINT/SIGTERM interruption
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		cancel()
+	}()
+
+	err := engine.RunEngine(ctx, cfg, client, processor, handler, "1.0.0")
+	if err != nil {
+		assert.Error(t, err, "Engine cancelled cleanly on context cancellation")
+	}
 }

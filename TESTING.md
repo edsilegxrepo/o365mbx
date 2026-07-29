@@ -10,7 +10,7 @@ We employ a **Layered Testing Strategy** to isolate logic, validate integrations
 
 ```mermaid
 flowchart TD
-    subgraph Stress["3. High-Concurrency Stress"]
+    subgraph Stress["4. High-Concurrency Stress"]
         S1["50 Parallel Download Workers"]
         S2["Multi-Folder Parallel Pipelines"]
         S3["15 Continuous Polling Cycles"]
@@ -18,12 +18,20 @@ flowchart TD
         S5["Bandwidth Throttling (0.5 MB/s)"]
     end
 
-    subgraph Chaos["2. Live Proxy Chaos (-tags=proxy)"]
+    subgraph Chaos["3. Live Proxy Chaos (-tags=proxy)"]
         C1["50% Random Error Failure Injection"]
         C2["105 Attachment Pressure Tests"]
-        C3["2-Level Nested .msg / .eml Extraction"]
+        C3["3-Level Nested .msg / .eml Extraction"]
         C4["Throttling (HTTP 429 & Retry-After)"]
         C5["SecretProtector Encrypted Token Validation"]
+        C6["S/MIME PKCS#7 Encrypted/Signed Envelopes"]
+        C7["UTF-8 Unicode & RTL Filenames (Japanese, Arabic)"]
+    end
+
+    subgraph Integration["2. API Integration (httpmock)"]
+        I1["OData Delta Link Mapping"]
+        I2["$value Stream Response Handling"]
+        I3["OAuth2 Token Auto-Refresh Lifecycle"]
     end
 
     subgraph Unit["1. Fast Unit Tests (go test ./...)"]
@@ -32,6 +40,7 @@ flowchart TD
         U3["HTML-to-Text & PDF Conversion"]
         U4["SecretProtector AES Decryption"]
         U5["Granular Diagnostic Exit Codes"]
+        U6["ENOSPC Write Safety & Staging Self-Healing"]
     end
 ```
 
@@ -222,6 +231,11 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 | | `TestFileHandler_ToRecipient_Complete` | Logic: Edge case recipients. | Handles nil recipients or missing email addresses in Graph models. |
 | | `TestFileHandler_ToRecipient_Nil` | Logic: Nil recipient handling. | Safely maps nil recipient models to empty Recipient struct. |
 | | `TestSanitizeFileName` | Security: OS-safe filename generation. | Replaces `/ \ : * ? " < > |` and `..` with `_`. |
+| | `TestFileHandler_InternationalUnicodeFilenames_RTLHeaders` | Real Data: UTF-8 Unicode & RTL filenames. | Verifies Japanese (`請求書.pdf`), Arabic (`فاتورة.eml`), Cyrillic (`отчет.xlsx`), and Unicode symbols (`Invoice_Enterprise.pdf`) filename I/O safety. |
+| | `TestFileHandler_SMIME_EncryptedSignedPayloads` | Real Data: S/MIME encrypted/signed MIME. | Extracts raw `smime.p7m` and `smime.p7s` payloads without binary corruption. |
+| | `TestFileHandler_DeeplyNestedEMLChains` | Real Data: 3-level nested RFC822 EML chains. | Recursively unwraps multi-level attached emails without stack overflow or name collisions. |
+| | `TestFileHandler_DiskSpaceExhaustion` | Hardening: Disk write / ENOSPC failure. | Cleans up incomplete `.tmp` files on write error without corrupting existing downloads. |
+| | `TestFileHandler_CorruptedWorkspaceSelfHealing` | Hardening: Orphan staging cleanup. | Automatically purges orphan `.tmp` files from previous crashes on startup. |
 | | `TestFileHandler_SaveError` | Logic: Per-message error reporting. | Generates `error.json` with timestamps and descriptions on failure. |
 | | `TestFileHandler_SaveError_UnmarshalError` | Logic: Appending to invalid JSON. | Handles corrupted error.json files by overwriting instead of failing. |
 | | `TestFileHandler_SaveStatusReport` | Logic: Job-level status summary. | Generates root `status_<timestamp>.json` with mailbox snapshots. |
@@ -303,6 +317,7 @@ The live Dev Proxy test suite relies on `tests/resilience-full-pipeline.json` to
 | `TestResilience_MessageDetailsMode` | Diagnostic: Streaming message details mode. | Streams folder message details (`-message-details`) under proxy. |
 | `TestResilience_BandwidthLimiter` | Transport: Bandwidth rate limiting. | Limits download rate to 0.5 MB/s without context deadlines timing out. |
 | `TestResilience_PerMessageTimeout` | Execution: Per-message timeout. | Limits execution to `-max-execution-time-msg` 1s without hanging. |
+| `TestEngine_GracefulShutdown_ContextCancellation` | Signal Resilience: Context cancellation / SIGINT. | Cancels active downloads cleanly and saves delta state up to last processed message. |
 | `TestResilience_ConfigFileLoading` | Config: JSON configuration file loading. | Loads `config.json` file and executes pipeline under live proxy chaos. |
 
 ---

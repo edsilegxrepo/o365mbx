@@ -1,0 +1,17 @@
+{
+  "plugins": [
+    {
+      "name": "MockResponsePlugin",
+      "enabled": true,
+      "pluginPath": "~appFolder/plugins/DevProxy.Plugins.dll",
+      "configSection": "mocksPlugin"
+    }
+  ],
+  "mocksPlugin": {
+    "mocksFile": "e:\\data\\devel\\build\\code\\private\\o365mbx\\testdata\\resilience-full-pipeline.json"
+  },
+  "urlsToWatch": [
+    "https://graph.microsoft.com/*",
+    "https://login.microsoftonline.com/*"
+  ]
+}

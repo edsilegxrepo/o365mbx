@@ -58,6 +58,21 @@ func (mr *MockO365ClientInterfaceMockRecorder) GetAttachmentRawStream(ctx, mailb
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetAttachmentRawStream", reflect.TypeOf((*MockO365ClientInterface)(nil).GetAttachmentRawStream), ctx, mailboxName, messageID, attachmentID)
 }
 
+// GetItemAttachment mocks base method.
+func (m *MockO365ClientInterface) GetItemAttachment(ctx context.Context, mailboxName, messageID, attachmentID string) (models.Attachmentable, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "GetItemAttachment", ctx, mailboxName, messageID, attachmentID)
+	ret0, _ := ret[0].(models.Attachmentable)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// GetItemAttachment indicates an expected call of GetItemAttachment.
+func (mr *MockO365ClientInterfaceMockRecorder) GetItemAttachment(ctx, mailboxName, messageID, attachmentID any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetItemAttachment", reflect.TypeOf((*MockO365ClientInterface)(nil).GetItemAttachment), ctx, mailboxName, messageID, attachmentID)
+}
+
 // GetMailboxHealthCheck mocks base method.
 func (m *MockO365ClientInterface) GetMailboxHealthCheck(ctx context.Context, mailboxName string) (*o365client.MailboxHealthStats, error) {
 	m.ctrl.T.Helper()

@@ -399,6 +399,7 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 				var err error
 
 				attMetadatas, err = fileHandler.SaveAttachmentFromBytes(job.Ctx, cfg.MailboxName, job.MessageID, job.MsgPath, job.Attachment, job.Sequence)
+				<-semaphore
 
 				if err != nil {
 					atomic.AddUint32(&stats.NonFatalErrors, 1)
@@ -455,7 +456,6 @@ func runDownloadMode(ctx context.Context, cfg *Config, o365Client o365client.O36
 				if cfg.ProcessingMode == "route" {
 					resultsChan <- ProcessingResult{MessageID: job.MessageID, Err: err, MsgPath: job.MsgPath}
 				}
-				<-semaphore
 			}
 		}()
 	}

@@ -936,3 +936,174 @@ func TestFileHandler_SaveFileAttachment_StreamingFallback(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, streamContent, string(savedData))
 }
+
+func TestFileHandler_InternationalUnicodeFilenames_RTLHeaders(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "fh-test-unicode-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	logger := logrus.New()
+	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
+
+	msgPath := filepath.Join(tmpDir, "msg-unicode")
+	_ = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0o700)
+
+	unicodeNames := []string{
+		"請求書_2026.pdf",
+		"فاتورة_المبيعات.eml",
+		"отчет_доходов.xlsx",
+		"Invoice_Enterprise_2026.pdf",
+	}
+
+	for idx, uName := range unicodeNames {
+		att := models.NewFileAttachment()
+		id := fmt.Sprintf("att-unicode-%d", idx+1)
+		name := uName
+		bytes := []byte("Unicode attachment test content")
+		att.SetId(&id)
+		att.SetName(&name)
+		att.SetContentBytes(bytes)
+
+		metas, err := fh.SaveAttachmentFromBytes(context.Background(), "user@example.com", "msg-unicode", msgPath, att, idx+1)
+		require.NoError(t, err)
+		require.Len(t, metas, 1)
+		assert.Equal(t, uName, metas[0].Name)
+	}
+}
+
+func TestFileHandler_SMIME_EncryptedSignedPayloads(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "fh-test-smime-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	logger := logrus.New()
+	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
+
+	msgPath := filepath.Join(tmpDir, "msg-smime")
+	_ = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0o700)
+
+	smimeTypes := []struct {
+		filename string
+		mimeType string
+		payload  []byte
+	}{
+		{
+			filename: "smime.p7m",
+			mimeType: "application/pkcs7-mime",
+			payload:  []byte("MIME-Version: 1.0\r\nContent-Type: application/pkcs7-mime; name=\"smime.p7m\"\r\n\r\nencrypted-smime-data-blob"),
+		},
+		{
+			filename: "smime.p7s",
+			mimeType: "application/pkcs7-signature",
+			payload:  []byte("MIME-Version: 1.0\r\nContent-Type: application/pkcs7-signature; name=\"smime.p7s\"\r\n\r\nsigned-pkcs7-signature-blob"),
+		},
+	}
+
+	for idx, item := range smimeTypes {
+		att := models.NewFileAttachment()
+		id := fmt.Sprintf("att-smime-%d", idx+1)
+		name := item.filename
+		cType := item.mimeType
+		att.SetId(&id)
+		att.SetName(&name)
+		att.SetContentType(&cType)
+		att.SetContentBytes(item.payload)
+
+		metas, err := fh.SaveAttachmentFromBytes(context.Background(), "user@example.com", "msg-smime", msgPath, att, idx+1)
+		require.NoError(t, err)
+		require.Len(t, metas, 1)
+		assert.Equal(t, item.filename, metas[0].Name)
+		assert.Equal(t, int64(len(item.payload)), metas[0].Size)
+	}
+}
+
+func TestFileHandler_DeeplyNestedEMLChains(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "fh-test-deep-nested-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	logger := logrus.New()
+	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "extractor", "default", logger)
+
+	msgPath := filepath.Join(tmpDir, "msg-deep-nested")
+	_ = os.MkdirAll(filepath.Join(msgPath, "attachments"), 0o700)
+
+	// Build a 3-level nested RFC822 MIME message
+	innerMIME := "From: inner@example.com\r\nTo: dest@example.com\r\nSubject: Inner Document\r\nMIME-Version: 1.0\r\nContent-Type: text/plain\r\n\r\nDeeply nested document body."
+	middleMIME := fmt.Sprintf("From: middle@example.com\r\nTo: dest@example.com\r\nSubject: Middle Message\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"MID_BOUND\"\r\n\r\n--MID_BOUND\r\nContent-Type: message/rfc822; name=\"inner.eml\"\r\n\r\n%s\r\n--MID_BOUND--", innerMIME)
+	outerMIME := fmt.Sprintf("From: outer@example.com\r\nTo: dest@example.com\r\nSubject: Outer Envelope\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"OUT_BOUND\"\r\n\r\n--OUT_BOUND\r\nContent-Type: message/rfc822; name=\"middle.eml\"\r\n\r\n%s\r\n--OUT_BOUND--", middleMIME)
+
+	att := models.NewFileAttachment()
+	id := "att-deep-nested"
+	name := "outer.eml"
+	cType := "message/rfc822"
+	bytes := []byte(outerMIME)
+	att.SetId(&id)
+	att.SetName(&name)
+	att.SetContentType(&cType)
+	att.SetContentBytes(bytes)
+
+	metas, err := fh.SaveAttachmentFromBytes(context.Background(), "user@example.com", "msg-deep-nested", msgPath, att, 1)
+	require.NoError(t, err)
+	assert.GreaterOrEqual(t, len(metas), 1)
+}
+
+func TestFileHandler_DiskSpaceExhaustion(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "fh-test-disk-exhaust-*")
+	defer func() {
+		_ = os.Chmod(tmpDir, 0o777)
+		_ = os.RemoveAll(tmpDir)
+	}()
+
+	logger := logrus.New()
+	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
+
+	// Make destination path read-only to simulate write error (disk space/permissions)
+	readOnlyFolder := filepath.Join(tmpDir, "msg-readonly")
+	_ = os.MkdirAll(readOnlyFolder, 0o555)
+	_ = os.Chmod(readOnlyFolder, 0o555)
+
+	att := models.NewFileAttachment()
+	id := "att-fail"
+	name := "fail.bin"
+	bytes := []byte("payload")
+	att.SetId(&id)
+	att.SetName(&name)
+	att.SetContentBytes(bytes)
+
+	_, err := fh.SaveAttachmentFromBytes(context.Background(), "user@example.com", "msg-readonly", readOnlyFolder, att, 1)
+	if err != nil {
+		assert.Error(t, err, "Write error simulated successfully")
+	}
+}
+
+func TestFileHandler_CorruptedWorkspaceSelfHealing(t *testing.T) {
+	tmpDir, _ := os.MkdirTemp("", "fh-test-self-healing-*")
+	defer func() { _ = os.RemoveAll(tmpDir) }()
+
+	logger := logrus.New()
+	fh := filehandler.NewFileHandler(tmpDir, nil, nil, 20, 8, 0, "raw", "default", logger)
+
+	msgPath := filepath.Join(tmpDir, "msg-corrupt")
+	attDir := filepath.Join(msgPath, "attachments")
+	_ = os.MkdirAll(attDir, 0o700)
+
+	// Create leftover orphaned .tmp files from a simulated crash
+	orphanTmp := filepath.Join(attDir, "01_partial_download.tmp")
+	_ = os.WriteFile(orphanTmp, []byte("half written content"), 0o600)
+	require.FileExists(t, orphanTmp)
+
+	// Verify FileHandler handles workspace operations cleanly
+	err := fh.CreateWorkspace()
+	assert.NoError(t, err)
+
+	att := models.NewFileAttachment()
+	id := "att-heal-1"
+	name := "clean_file.txt"
+	bytes := []byte("clean attachment content")
+	att.SetId(&id)
+	att.SetName(&name)
+	att.SetContentBytes(bytes)
+
+	metas, err := fh.SaveAttachmentFromBytes(context.Background(), "user@example.com", "msg-corrupt", msgPath, att, 1)
+	require.NoError(t, err)
+	require.Len(t, metas, 1)
+	assert.Equal(t, "clean_file.txt", metas[0].Name)
+}

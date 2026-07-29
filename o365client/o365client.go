@@ -87,12 +87,14 @@ type O365ClientInterface interface {
 	MoveMessage(ctx context.Context, mailboxName, messageID, destinationFolderID string) error
 	GetOrCreateFolderIDByName(ctx context.Context, mailboxName, folderName string) (string, error)
 	GetAttachmentRawStream(ctx context.Context, mailboxName, messageID, attachmentID string) (io.ReadCloser, error)
+	GetItemAttachment(ctx context.Context, mailboxName, messageID, attachmentID string) (models.Attachmentable, error)
 }
 
 // O365Client implements the O365ClientInterface using the Microsoft Graph SDK.
 type O365Client struct {
-	client *msgraphsdk.GraphServiceClient
-	rng    *rand.Rand
+	client       *msgraphsdk.GraphServiceClient
+	authProvider AuthenticationProvider
+	rng          *rand.Rand
 }
 
 // --- Initialization ---
@@ -116,10 +118,12 @@ func NewO365ClientWithAuthProvider(authProvider AuthenticationProvider, rng *ran
 	if err != nil {
 		return nil, fmt.Errorf("failed to create graph adapter: %w", err)
 	}
-	return NewO365ClientWithAdapter(adapter, rng), nil
+	client := NewO365ClientWithAdapter(adapter, rng)
+	client.authProvider = authProvider
+	return client, nil
 }
 
-// NewO365ClientWithAdapter allows injecting a custom adapter for testing (e.g., with httpmock)
+// NewO365ClientWithAdapter allows injecting a custom adapter for testing (e.g., with Microsoft Dev Proxy transport).
 func NewO365ClientWithAdapter(adapter kiota.RequestAdapter, rng *rand.Rand) *O365Client {
 	return &O365Client{
 		client: msgraphsdk.NewGraphServiceClient(adapter),
@@ -171,27 +175,48 @@ func (c *O365Client) GetMessages(ctx context.Context, mailboxName, sourceFolderI
 			"mailboxName":    mailboxName,
 			"sourceFolderID": sourceFolderID,
 		}).Debug("Requesting message delta from Graph API.")
-		messagesResponse, err = c.client.Users().ByUserId(mailboxName).MailFolders().ByMailFolderId(sourceFolderID).Messages().Delta().Get(ctx, requestConfiguration)
+		for attempt := 0; attempt < 5; attempt++ {
+			messagesResponse, err = c.client.Users().ByUserId(mailboxName).MailFolders().ByMailFolderId(sourceFolderID).Messages().Delta().Get(ctx, requestConfiguration)
+			if err == nil {
+				break
+			}
+			sleepSec := 2
+			if strings.Contains(strings.ToLower(err.Error()), "throttled") || strings.Contains(strings.ToLower(err.Error()), "retry-after") {
+				sleepSec = 7
+			}
+			time.Sleep(time.Duration(sleepSec) * time.Second)
+		}
 	} else {
 		log.WithField("deltaLink", state.DeltaLink).Info("Found delta link. Fetching incremental changes.")
 		builder := users.NewItemMailFoldersItemMessagesDeltaRequestBuilder(state.DeltaLink, c.client.GetAdapter())
-		messagesResponse, err = builder.Get(ctx, nil)
+		for attempt := 0; attempt < 5; attempt++ {
+			messagesResponse, err = builder.Get(ctx, nil)
+			if err == nil {
+				break
+			}
+			sleepSec := 2
+			if strings.Contains(strings.ToLower(err.Error()), "throttled") || strings.Contains(strings.ToLower(err.Error()), "retry-after") {
+				sleepSec = 7
+			}
+			time.Sleep(time.Duration(sleepSec) * time.Second)
+		}
 	}
 
 	if err != nil {
 		return handleError(err)
 	}
 
-	if messagesResponse == nil {
-		log.Warn("Received nil response from O365 API for messages.")
-		return nil
-	}
-
 	for {
-		pageMessages := messagesResponse.GetValue()
-		log.WithField("count", len(pageMessages)).Info("Fetched page of messages.")
-		for i, message := range pageMessages {
-			id := "unknown"
+		if messagesResponse == nil || messagesResponse.GetValue() == nil {
+			log.Warn("Received nil response or empty messages list from Graph API.")
+			break
+		}
+
+		messages := messagesResponse.GetValue()
+		log.WithField("count", len(messages)).Info("Fetched page of messages.")
+
+		for i, message := range messages {
+			var id string
 			if message.GetId() != nil {
 				id = *message.GetId()
 			}
@@ -222,7 +247,17 @@ func (c *O365Client) GetMessages(ctx context.Context, mailboxName, sourceFolderI
 
 		log.Debug("Fetching next page of messages.")
 		builder := users.NewItemMailFoldersItemMessagesDeltaRequestBuilder(*nextLink, c.client.GetAdapter())
-		messagesResponse, err = builder.Get(ctx, nil)
+		for attempt := 0; attempt < 5; attempt++ {
+			messagesResponse, err = builder.Get(ctx, nil)
+			if err == nil {
+				break
+			}
+			sleepSec := 2
+			if strings.Contains(strings.ToLower(err.Error()), "throttled") || strings.Contains(strings.ToLower(err.Error()), "retry-after") {
+				sleepSec = 7
+			}
+			time.Sleep(time.Duration(sleepSec) * time.Second)
+		}
 		if err != nil {
 			return handleError(err)
 		}
@@ -232,11 +267,18 @@ func (c *O365Client) GetMessages(ctx context.Context, mailboxName, sourceFolderI
 	return nil
 }
 
-// GetMessageAttachments fetches all attachments for a specific message.
+// GetMessageAttachments fetches all attachments for a specific message, expanding item attachments.
 func (c *O365Client) GetMessageAttachments(ctx context.Context, mailboxName, messageID string) ([]models.Attachmentable, error) {
 	log.WithFields(log.Fields{"messageID": messageID}).Debug("Fetching attachments for message.")
 
-	response, err := c.client.Users().ByUserId(mailboxName).Messages().ByMessageId(messageID).Attachments().Get(ctx, nil)
+	expand := "microsoft.graph.itemAttachment/item"
+	requestConfiguration := &users.ItemMessagesItemAttachmentsRequestBuilderGetRequestConfiguration{
+		QueryParameters: &users.ItemMessagesItemAttachmentsRequestBuilderGetQueryParameters{
+			Expand: []string{expand},
+		},
+	}
+
+	response, err := c.client.Users().ByUserId(mailboxName).Messages().ByMessageId(messageID).Attachments().Get(ctx, requestConfiguration)
 	if err != nil {
 		return nil, handleError(err)
 	}
@@ -244,6 +286,15 @@ func (c *O365Client) GetMessageAttachments(ctx context.Context, mailboxName, mes
 	attachments := response.GetValue()
 	log.WithFields(log.Fields{"messageID": messageID, "count": len(attachments)}).Info("Successfully fetched attachments.")
 	return attachments, nil
+}
+
+// GetItemAttachment fetches a single item attachment with expanded item details.
+func (c *O365Client) GetItemAttachment(ctx context.Context, mailboxName, messageID, attachmentID string) (models.Attachmentable, error) {
+	attachment, err := c.client.Users().ByUserId(mailboxName).Messages().ByMessageId(messageID).Attachments().ByAttachmentId(attachmentID).Get(ctx, nil)
+	if err != nil {
+		return nil, handleError(err)
+	}
+	return attachment, nil
 }
 
 // --- Folder Management ---
@@ -260,7 +311,19 @@ func (c *O365Client) GetOrCreateFolderIDByName(ctx context.Context, mailboxName,
 		},
 	}
 
-	folders, err := c.client.Users().ByUserId(mailboxName).MailFolders().Get(ctx, requestConfiguration)
+	var folders models.MailFolderCollectionResponseable
+	var err error
+	for attempt := 0; attempt < 10; attempt++ {
+		folders, err = c.client.Users().ByUserId(mailboxName).MailFolders().Get(ctx, requestConfiguration)
+		if err == nil {
+			break
+		}
+		sleepSec := 2
+		if strings.Contains(strings.ToLower(err.Error()), "throttled") || strings.Contains(strings.ToLower(err.Error()), "retry-after") {
+			sleepSec = 7
+		}
+		time.Sleep(time.Duration(sleepSec) * time.Second)
+	}
 	if err != nil {
 		return "", handleError(err)
 	}
@@ -289,7 +352,14 @@ func (c *O365Client) GetOrCreateFolderIDByName(ctx context.Context, mailboxName,
 	newFolder := models.NewMailFolder()
 	newFolder.SetDisplayName(&folderName)
 
-	createdFolder, err := c.client.Users().ByUserId(mailboxName).MailFolders().Post(ctx, newFolder, nil)
+	var createdFolder models.MailFolderable
+	for attempt := 0; attempt < 5; attempt++ {
+		createdFolder, err = c.client.Users().ByUserId(mailboxName).MailFolders().Post(ctx, newFolder, nil)
+		if err == nil {
+			break
+		}
+		time.Sleep(time.Duration(attempt+1) * time.Second)
+	}
 	if err != nil {
 		return "", handleError(err)
 	}
@@ -305,6 +375,7 @@ func (c *O365Client) GetAllFolders(ctx context.Context, mailboxName string) ([]m
 	requestConfiguration := &users.ItemMailFoldersRequestBuilderGetRequestConfiguration{
 		QueryParameters: &users.ItemMailFoldersRequestBuilderGetQueryParameters{
 			Select: []string{"id", "displayName", "totalItemCount"},
+			Expand: []string{"singleValueExtendedProperties($filter=id eq 'Long 0x0E08')"},
 		},
 	}
 	foldersResponse, err := c.client.Users().ByUserId(mailboxName).MailFolders().Get(ctx, requestConfiguration)
@@ -357,11 +428,7 @@ func (c *O365Client) GetMailboxHealthCheck(ctx context.Context, mailboxName stri
 
 	var totalMailboxSize int64
 	for _, folder := range allFolders {
-		var folderSize int64
-		// The 'sizeInBytes' property is not a first-class property in the Go model.
-		// We must retrieve it from the additional data bag.
-		additionalData := folder.GetAdditionalData()
-		folderSize = getFolderSizeFromAdditionalData(additionalData)
+		folderSize := getFolderSizeFromFolder(folder)
 
 		folderStat := FolderStats{
 			Name:       *folder.GetDisplayName(),
@@ -492,11 +559,20 @@ func (c *O365Client) MoveMessage(ctx context.Context, mailboxName, messageID, de
 	requestBody := users.NewItemMessagesItemMovePostRequestBody()
 	requestBody.SetDestinationId(&destinationFolderID)
 
-	_, err := c.client.Users().ByUserId(mailboxName).Messages().ByMessageId(messageID).Move().Post(ctx, requestBody, nil)
-	if err != nil {
-		return handleError(err)
+	var lastErr error
+	for attempt := 0; attempt < 10; attempt++ {
+		_, err := c.client.Users().ByUserId(mailboxName).Messages().ByMessageId(messageID).Move().Post(ctx, requestBody, nil)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		sleepSec := 2
+		if strings.Contains(strings.ToLower(err.Error()), "throttled") || strings.Contains(strings.ToLower(err.Error()), "retry-after") {
+			sleepSec = 7
+		}
+		time.Sleep(time.Duration(sleepSec) * time.Second)
 	}
-	return nil
+	return handleError(lastErr)
 }
 
 // --- Attachment and Stream Handling ---
@@ -539,6 +615,17 @@ func (c *O365Client) GetAttachmentRawStream(ctx context.Context, mailboxName, me
 	req, err := http.NewRequestWithContext(ctx, "GET", parsedUrl.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	if c.authProvider != nil {
+		reqInfo := kiota.NewRequestInformation()
+		reqInfo.UrlTemplate = parsedUrl.String()
+		reqInfo.Method = kiota.GET
+		if authErr := c.authProvider.AuthenticateRequest(ctx, reqInfo, nil); authErr == nil {
+			if authHeaders := reqInfo.Headers.Get("Authorization"); len(authHeaders) > 0 {
+				req.Header.Set("Authorization", authHeaders[0])
+			}
+		}
 	}
 
 	resp, err := httpClient.Do(req)
@@ -585,6 +672,25 @@ func handleError(err error) error {
 // Ptr returns a pointer to the given value.
 func Ptr[T any](v T) *T {
 	return &v
+}
+
+// getFolderSizeFromFolder extracts folder size in bytes from MAPI extended properties or additionalData.
+func getFolderSizeFromFolder(folder models.MailFolderable) int64 {
+	if folder == nil {
+		return 0
+	}
+	// 1. Check singleValueExtendedProperties for MAPI PR_MESSAGE_SIZE_EXTENDED (Long 0x0E08)
+	if props := folder.GetSingleValueExtendedProperties(); props != nil {
+		for _, prop := range props {
+			if prop.GetId() != nil && strings.EqualFold(*prop.GetId(), "Long 0x0E08") && prop.GetValue() != nil {
+				if size := parseFolderSize(*prop.GetValue()); size > 0 {
+					return size
+				}
+			}
+		}
+	}
+	// 2. Fall back to additionalData ("sizeInBytes", "size")
+	return getFolderSizeFromAdditionalData(folder.GetAdditionalData())
 }
 
 // getFolderSizeFromAdditionalData searches additionalData case-insensitively for size keys.
